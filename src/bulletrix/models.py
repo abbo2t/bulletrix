@@ -164,6 +164,17 @@ class Outline:
         new_node.parent = parent
         parent.children.insert(idx + 1, new_node)
 
+    def insert_sibling_before(self, node: Node, new_node: Node) -> None:
+        parent = node.parent
+        if parent is None:
+            # node is a zoom root with no real parent in this stack; treat as child
+            node.children.insert(0, new_node)
+            new_node.parent = node
+            return
+        idx = self.index_in_parent(node)
+        new_node.parent = parent
+        parent.children.insert(idx, new_node)
+
     def add_first_child(self, node: Node, new_node: Node) -> None:
         new_node.parent = node
         node.children.insert(0, new_node)

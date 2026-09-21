@@ -1,6 +1,14 @@
-"""The interactive outline widget: rendering + all keyboard editing logic."""
+"""The interactive outline widget: rendering + all keyboard editing logic.
+
+Editing is modal, vim-style: NORMAL mode drives navigation and structural
+commands (movement, indent, delete, fold, ...); INSERT mode is where
+character keys land in the buffer. `i`/`a`/`I`/`A`/`o`/`O`/`cc` enter
+INSERT; `Escape` returns to NORMAL. Not implemented (out of scope for this
+pass): undo, yank/paste, and numeric count prefixes (e.g. `3j`).
+"""
 from __future__ import annotations
 
+from enum import Enum
 from typing import Callable, Optional
 
 from rich.text import Text
@@ -9,6 +17,11 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from .models import TAG_RE, Node, Outline, Row
+
+
+class Mode(Enum):
+    NORMAL = "NORMAL"
+    INSERT = "INSERT"
 
 
 def _highlight_tags(text_obj: Text) -> None:
@@ -36,6 +49,8 @@ class OutlineView(Static, can_focus=True):
         self.selected_id: str = first_row.node.id
         self.cursor: int = len(first_row.node.text)
         self.editing_note: bool = False
+        self.mode: Mode = Mode.NORMAL
+        self._pending: Optional[str] = None
 
     # -- helpers -----------------------------------------------------------
     def _rows(self) -> list[Row]:
@@ -60,6 +75,15 @@ class OutlineView(Static, can_focus=True):
             node.note = value
         else:
             node.text = value
+
+    def _enter_insert(self, cursor: Optional[int] = None) -> None:
+        self.mode = Mode.INSERT
+        if cursor is not None:
+            self.cursor = cursor
+
+    def _enter_normal(self) -> None:
+        self.mode = Mode.NORMAL
+        self._pending = None
 
     def _changed(self) -> None:
         self.refresh(layout=True)
@@ -104,6 +128,17 @@ class OutlineView(Static, can_focus=True):
         self.refresh(layout=True)
         self._scroll_selected_into_view()
 
+    def _jump_to_index(self, index: int) -> None:
+        rows = self._rows()
+        if not rows:
+            return
+        idx = max(0, min(len(rows) - 1, index))
+        self.editing_note = False
+        self.selected_id = rows[idx].node.id
+        self.cursor = 0
+        self.refresh(layout=True)
+        self._scroll_selected_into_view()
+
     # -- mutations -----------------------------------------------------------
     def _split_line(self, row: Row) -> None:
         node = row.node
@@ -128,6 +163,69 @@ class OutlineView(Static, can_focus=True):
         node.collapsed = False
         self.selected_id = new_node.id
         self.cursor = 0
+        self._enter_insert()
+        self._changed()
+
+    def _open_below(self, row: Row) -> None:
+        node = row.node
+        new_node = Node(text="")
+        if row.is_header:
+            self.outline.add_first_child(node, new_node)
+        else:
+            self.outline.insert_sibling_after(node, new_node)
+        self.selected_id = new_node.id
+        self.cursor = 0
+        self._enter_insert()
+        self._changed()
+
+    def _open_above(self, row: Row) -> None:
+        if row.is_header:
+            # there's nothing "above" a page's own title; open a child instead
+            self._open_below(row)
+            return
+        node = row.node
+        new_node = Node(text="")
+        self.outline.insert_sibling_before(node, new_node)
+        self.selected_id = new_node.id
+        self.cursor = 0
+        self._enter_insert()
+        self._changed()
+
+    def _change_line(self, row: Row) -> None:
+        row.node.text = ""
+        row.node.touch()
+        self.selected_id = row.node.id
+        self.cursor = 0
+        self._enter_insert()
+        self._changed()
+
+    def _delete_node(self, row: Row) -> None:
+        node = row.node
+        parent = node.parent
+        if parent is None or row.is_header:
+            return
+        if parent is self.outline.root and len(parent.children) == 1:
+            return  # keep at least one top-level item
+        rows = self._rows()
+        idx = next(i for i, r in enumerate(rows) if r.node.id == node.id)
+        self.outline.remove(node)
+        new_rows = self._rows()
+        if not new_rows:
+            return
+        new_idx = min(idx, len(new_rows) - 1)
+        self.selected_id = new_rows[new_idx].node.id
+        self.cursor = 0
+        self._changed()
+
+    def _fold(self, row: Row, which: str) -> None:
+        if not row.has_children:
+            return
+        if which == "o":
+            row.node.collapsed = False
+        elif which == "c":
+            row.node.collapsed = True
+        elif which == "a":
+            row.node.collapsed = not row.node.collapsed
         self._changed()
 
     def _indent(self) -> None:
@@ -206,13 +304,28 @@ class OutlineView(Static, can_focus=True):
         node = row.node
         key = event.key
 
-        if key == "enter":
+        if key == "escape":
             event.stop()
-            if self.editing_note:
-                self._insert_char(row, "\n")
+            if self.mode is Mode.INSERT:
+                buf = self._buffer(node)
+                self._enter_normal()
+                self.cursor = max(0, min(self.cursor, max(0, len(buf) - 1)))
+                self._changed()
             else:
-                self._split_line(row)
-        elif key == "tab":
+                self._pending = None
+            return
+
+        if self._handle_shared_key(row, node, key, event):
+            return
+
+        if self.mode is Mode.INSERT:
+            self._handle_insert_key(row, node, key, event)
+        else:
+            self._handle_normal_key(row, node, key, event)
+
+    def _handle_shared_key(self, row: Row, node: Node, key: str, event: events.Key) -> bool:
+        """Keys that behave the same in both modes. Returns True if handled."""
+        if key == "tab":
             event.stop()
             self._indent()
         elif key == "shift+tab":
@@ -247,12 +360,6 @@ class OutlineView(Static, can_focus=True):
             event.stop()
             self.cursor = len(self._buffer(node))
             self.refresh(layout=True)
-        elif key == "backspace":
-            event.stop()
-            self._backspace(row)
-        elif key == "delete":
-            event.stop()
-            self._forward_delete(row)
         elif key == "ctrl+up":
             event.stop()
             if self.outline.move_up(node):
@@ -268,6 +375,7 @@ class OutlineView(Static, can_focus=True):
                 self.selected_id = node.id
                 self.cursor = len(node.text)
                 self.editing_note = False
+                self._enter_normal()
                 self._changed()
         elif key == "ctrl+left":
             event.stop()
@@ -276,6 +384,7 @@ class OutlineView(Static, can_focus=True):
                 self.selected_id = popped.id
                 self.cursor = len(popped.text)
                 self.editing_note = False
+                self._enter_normal()
                 self._changed()
         elif key == "ctrl+d":
             event.stop()
@@ -291,15 +400,137 @@ class OutlineView(Static, can_focus=True):
             event.stop()
             self.editing_note = not self.editing_note
             self.cursor = len(self._buffer(node))
+            if self.editing_note:
+                self._enter_insert()
+            else:
+                self._enter_normal()
             self._changed()
         elif key == "ctrl+n":
             event.stop()
             self._new_child(row)
+        elif key == "ctrl+f":
+            event.stop()
+            self.app.action_search()
+        else:
+            return False
+        return True
+
+    def _handle_insert_key(self, row: Row, node: Node, key: str, event: events.Key) -> None:
+        if key == "enter":
+            event.stop()
+            if self.editing_note:
+                self._insert_char(row, "\n")
+            else:
+                self._split_line(row)
+        elif key == "backspace":
+            event.stop()
+            self._backspace(row)
+        elif key == "delete":
+            event.stop()
+            self._forward_delete(row)
         elif event.character and event.character.isprintable() and not key.startswith(
             ("ctrl+", "alt+")
         ):
             event.stop()
             self._insert_char(row, event.character)
+
+    def _handle_normal_key(self, row: Row, node: Node, key: str, event: events.Key) -> None:
+        pending = self._pending
+        self._pending = None
+        ch = event.character
+
+        if pending == "d":
+            if ch == "d":
+                event.stop()
+                self._delete_node(row)
+            return
+        if pending == "c":
+            if ch == "c":
+                event.stop()
+                self._change_line(row)
+            return
+        if pending == "g":
+            if ch == "g":
+                event.stop()
+                self._jump_to_index(0)
+            return
+        if pending == "z":
+            if ch in ("o", "c", "a"):
+                event.stop()
+                self._fold(row, ch)
+            return
+
+        if ch == "d":
+            event.stop()
+            self._pending = "d"
+        elif ch == "c":
+            event.stop()
+            self._pending = "c"
+        elif ch == "g":
+            event.stop()
+            self._pending = "g"
+        elif ch == "z":
+            event.stop()
+            self._pending = "z"
+        elif ch == "i":
+            event.stop()
+            self._enter_insert()
+            self._changed()
+        elif ch == "a":
+            event.stop()
+            self._enter_insert(cursor=min(len(self._buffer(node)), self.cursor + 1))
+            self._changed()
+        elif ch == "I":
+            event.stop()
+            self._enter_insert(cursor=0)
+            self._changed()
+        elif ch == "A":
+            event.stop()
+            self._enter_insert(cursor=len(self._buffer(node)))
+            self._changed()
+        elif ch == "o":
+            event.stop()
+            self._open_below(row)
+        elif ch == "O":
+            event.stop()
+            self._open_above(row)
+        elif ch == "x":
+            event.stop()
+            self._forward_delete(row)
+        elif ch == "h":
+            event.stop()
+            if self.cursor > 0:
+                self.cursor -= 1
+                self.refresh(layout=True)
+        elif ch == "l":
+            event.stop()
+            buf = self._buffer(node)
+            if self.cursor < len(buf):
+                self.cursor += 1
+                self.refresh(layout=True)
+        elif ch == "j":
+            event.stop()
+            self._move_selection(1)
+        elif ch == "k":
+            event.stop()
+            self._move_selection(-1)
+        elif ch == "0":
+            event.stop()
+            self.cursor = 0
+            self.refresh(layout=True)
+        elif ch == "$":
+            event.stop()
+            self.cursor = len(self._buffer(node))
+            self.refresh(layout=True)
+        elif ch == "G":
+            event.stop()
+            self._jump_to_index(len(self._rows()) - 1)
+        elif ch == "/":
+            event.stop()
+            self.app.action_search()
+        elif ch and ch.isprintable() and not key.startswith(("ctrl+", "alt+")):
+            # swallow other printable keys in NORMAL mode rather than typing them
+            event.stop()
 
     # -- rendering -----------------------------------------------------------
     def render(self) -> Text:

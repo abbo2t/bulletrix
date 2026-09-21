@@ -10,12 +10,14 @@ from textual.widgets import Input, Static
 
 from . import storage
 from .models import Node, Outline
-from .outline_view import OutlineView
+from .outline_view import Mode, OutlineView
 
-HELP = (
-    "Enter:new  Tab/⇧Tab:indent  ^↑↓:move  ^→/^←:zoom  "
-    "^D:done  ^K:collapse  ^O:note  ^N:child  ^F:search  ^H:hide-done  ^S:save  ^Q:quit"
+NORMAL_HELP = (
+    "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  "
+    ">>/<<:indent  za/zo/zc:fold  gg/G:top/bottom  x:del-char  /:search  "
+    "^D:done  ^O:note  ^H:hide-done  ^S:save  ^Q:quit"
 )
+INSERT_HELP = "Esc:normal  Enter:new line  Tab/⇧Tab:indent  Backspace/Delete:edit  ^D:done  ^O:note"
 
 
 class BulletrixApp(App):
@@ -85,7 +87,9 @@ class BulletrixApp(App):
 
     def _status_text(self) -> str:
         hide = "on" if self.outline.hide_completed else "off"
-        return f"{HELP}  |  hide-done:{hide}"
+        mode = self.outline_view.mode
+        help_text = NORMAL_HELP if mode is Mode.NORMAL else INSERT_HELP
+        return f"-- {mode.value} --  {help_text}  |  hide-done:{hide}"
 
     def _handle_change(self) -> None:
         self.query_one("#breadcrumb", Static).update(self._breadcrumb_text())
@@ -101,8 +105,9 @@ class BulletrixApp(App):
         self.outline_view.selected_id = node.id
         self.outline_view.cursor = 0
         self.outline_view.editing_note = False
+        self.outline_view.mode = Mode.NORMAL
         self._handle_change()
-        self.outline_view.refresh()
+        self.outline_view.refresh(layout=True)
 
     # -- actions -------------------------------------------------------------
     def action_search(self) -> None:
