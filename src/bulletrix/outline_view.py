@@ -245,6 +245,15 @@ class OutlineView(Static, can_focus=True):
         self._enter_normal()
         self._changed()
 
+    def _zoom_out(self) -> None:
+        popped = self.outline.zoom_out()
+        if popped is not None:
+            self.selected_id = popped.id
+            self.cursor = len(popped.text)
+            self.editing_note = False
+            self._enter_normal()
+            self._changed()
+
     def _indent(self) -> None:
         row = self._current_row()
         if row is None or row.is_header:
@@ -328,8 +337,10 @@ class OutlineView(Static, can_focus=True):
                 self._enter_normal()
                 self.cursor = max(0, min(self.cursor, max(0, len(buf) - 1)))
                 self._changed()
-            else:
+            elif self._pending is not None:
                 self._pending = None
+            else:
+                self._zoom_out()
             return
 
         if self._handle_shared_key(row, node, key, event):
@@ -390,13 +401,7 @@ class OutlineView(Static, can_focus=True):
             self._zoom_in(row, node)
         elif key == "ctrl+left":
             event.stop()
-            popped = self.outline.zoom_out()
-            if popped is not None:
-                self.selected_id = popped.id
-                self.cursor = len(popped.text)
-                self.editing_note = False
-                self._enter_normal()
-                self._changed()
+            self._zoom_out()
         elif key == "ctrl+d":
             event.stop()
             if not row.is_header:
@@ -478,6 +483,10 @@ class OutlineView(Static, can_focus=True):
         if key == "space":
             event.stop()
             self._fold(row, "a")
+            return
+        if ch == "q":
+            event.stop()
+            self.app.action_quit()
             return
 
         if ch == "d":

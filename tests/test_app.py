@@ -150,6 +150,59 @@ async def test_dd_refuses_to_delete_the_only_top_level_item(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_escape_in_normal_mode_zooms_out(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("enter")  # zoom in
+        assert app.outline.zoom_root.text == "project"
+
+        await pilot.press("escape")  # zoom back out, like ctrl+left
+        assert app.outline.zoom_root is app.outline.root
+
+
+@pytest.mark.asyncio
+async def test_escape_cancels_pending_command_without_zooming_out(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("enter")  # zoom in
+        assert app.outline.zoom_root.text == "project"
+
+        await pilot.press("d")  # start a pending "dd" sequence
+        await pilot.press("escape")  # cancel it — should NOT also zoom out
+        assert app.outline.zoom_root.text == "project"
+        assert app.outline_view._pending is None
+
+
+@pytest.mark.asyncio
+async def test_q_quits_in_normal_mode(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        called = []
+        app.action_quit = lambda: called.append(True)
+        await pilot.press("q")
+        assert called == [True]
+
+
+@pytest.mark.asyncio
+async def test_q_types_normally_in_insert_mode(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        called = []
+        app.action_quit = lambda: called.append(True)
+        await pilot.press("i")
+        await pilot.press(*"quit")
+        assert called == []
+        rows = app.outline.flatten()
+        assert rows[0].node.text == "quit"
+
+
+@pytest.mark.asyncio
 async def test_cc_clears_line_and_enters_insert(tmp_path):
     app = make_app(tmp_path)
     async with app.run_test() as pilot:
