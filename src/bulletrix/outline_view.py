@@ -29,13 +29,24 @@ def _highlight_tags(text_obj: Text) -> None:
         text_obj.stylize("bold magenta", match.start(), match.end())
 
 
-def _apply_cursor(text_obj: Text, cursor: int) -> None:
+def _apply_cursor(text_obj: Text, cursor: int, mode: Mode) -> Text:
     length = len(text_obj.plain)
+    cursor = max(0, min(cursor, length))
+    if mode is Mode.INSERT:
+        # a thin bar between characters, like vim's insert-mode caret
+        before, after = text_obj[:cursor], text_obj[cursor:]
+        result = Text()
+        result.append_text(before)
+        result.append("│", style="bold yellow")
+        result.append_text(after)
+        return result
+    # NORMAL mode: a solid block over the character, like vim's normal-mode cursor
+    result = text_obj.copy()
     if cursor >= length:
-        text_obj.append(" ", style="reverse")
+        result.append(" ", style="reverse")
     else:
-        cursor = max(0, cursor)
-        text_obj.stylize("reverse", cursor, cursor + 1)
+        result.stylize("reverse", cursor, cursor + 1)
+    return result
 
 
 class OutlineView(Static, can_focus=True):
@@ -570,7 +581,7 @@ class OutlineView(Static, can_focus=True):
         text_segment = Text(node.text, style=" ".join(style_parts) or None)
         _highlight_tags(text_segment)
         if is_selected and not self.editing_note:
-            _apply_cursor(text_segment, self.cursor)
+            text_segment = _apply_cursor(text_segment, self.cursor, self.mode)
         t.append_text(text_segment)
 
         show_note = bool(node.note) or (is_selected and self.editing_note)
@@ -579,7 +590,7 @@ class OutlineView(Static, can_focus=True):
             t.append("  " * (row.depth + 1) + "  ")
             note_text = Text(node.note, style="italic grey62")
             if is_selected and self.editing_note:
-                _apply_cursor(note_text, self.cursor)
+                note_text = _apply_cursor(note_text, self.cursor, self.mode)
             t.append_text(note_text)
 
         return t
