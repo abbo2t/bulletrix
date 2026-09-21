@@ -24,6 +24,10 @@ class Mode(Enum):
     INSERT = "INSERT"
 
 
+# Home-row-first order, like flash.nvim/easymotion default label pools.
+JUMP_LABELS = "fjdkslaghrueiwoqpcmxzntyvb"
+
+
 def _highlight_tags(text_obj: Text) -> None:
     for match in TAG_RE.finditer(text_obj.plain):
         text_obj.stylize("bold magenta", match.start(), match.end())
@@ -45,6 +49,26 @@ def _apply_cursor(text_obj: Text, cursor: int, mode: Mode) -> Text:
     return result
 
 
+def _overlay_labels(text_obj: Text, labels: dict[int, str]) -> Text:
+    # Substitutes the label glyph in place of the matched character for this
+    # render only (the real node.text is never touched), so — same principle
+    # as the cursor — nothing shifts.
+    if not labels:
+        return text_obj
+    result = text_obj
+    length = len(result.plain)
+    for idx, label in labels.items():
+        if idx >= length:
+            continue
+        before, after = result[:idx], result[idx + 1 :]
+        rebuilt = Text()
+        rebuilt.append_text(before)
+        rebuilt.append(label, style="bold black on yellow")
+        rebuilt.append_text(after)
+        result = rebuilt
+    return result
+
+
 class OutlineView(Static, can_focus=True):
     """Renders the flattened outline and handles all editing key events."""
 
@@ -58,6 +82,8 @@ class OutlineView(Static, can_focus=True):
         self.editing_note: bool = False
         self.mode: Mode = Mode.NORMAL
         self._pending: Optional[str] = None
+        self._jump_awaiting_char: bool = False
+        self._jump_targets: dict[str, tuple[str, int]] = {}
 
     # -- helpers -----------------------------------------------------------
     def _rows(self) -> list[Row]:
@@ -98,17 +124,22 @@ class OutlineView(Static, can_focus=True):
         if self.on_change:
             self.on_change()
 
-    def _scroll_selected_into_view(self) -> None:
-        rows = self._rows()
+    def _rows_with_line_numbers(self) -> list[tuple[Row, int]]:
+        result = []
         line = 0
-        target = None
-        for row in rows:
-            if row.node.id == self.selected_id:
-                target = line
-                break
+        for row in self._rows():
+            result.append((row, line))
             line += 1
             if row.node.note:
                 line += 1
+        return result
+
+    def _scroll_selected_into_view(self) -> None:
+        target = None
+        for row, line in self._rows_with_line_numbers():
+            if row.node.id == self.selected_id:
+                target = line
+                break
         if target is None:
             return
         try:
@@ -122,6 +153,19 @@ class OutlineView(Static, can_focus=True):
                     container.scroll_to(y=target - height + 2, animate=False)
         except Exception:
             pass
+
+    def _visible_rows(self) -> list[Row]:
+        rows_with_lines = self._rows_with_line_numbers()
+        try:
+            container = self.parent
+            if isinstance(container, VerticalScroll):
+                top = container.scroll_offset.y
+                height = container.size.height or len(rows_with_lines) or 1
+                bottom = top + height
+                return [row for row, line in rows_with_lines if top <= line < bottom]
+        except Exception:
+            pass
+        return [row for row, _ in rows_with_lines]
 
     # -- selection movement ------------------------------------------------
     def _move_selection(self, delta: int, cursor_at_end: bool = False) -> None:
@@ -254,6 +298,82 @@ class OutlineView(Static, can_focus=True):
             self._enter_normal()
             self._changed()
 
+    # -- flash.nvim-style jump ------------------------------------------------
+    @property
+    def jump_hint(self) -> Optional[str]:
+        if self._jump_awaiting_char:
+            return "type a character to jump to…"
+        if self._jump_targets:
+            return "type a label to jump…"
+        return None
+
+    def _start_jump(self) -> None:
+        self._jump_awaiting_char = True
+        self._changed()
+
+    def _cancel_jump(self) -> None:
+        self._jump_awaiting_char = False
+        self._jump_targets = {}
+        self._changed()
+
+    def _find_jump_matches(self, target_ch: str) -> list[tuple[Row, int]]:
+        visible = self._visible_rows()
+        selected_rank = next(
+            (i for i, r in enumerate(visible) if r.node.id == self.selected_id), 0
+        )
+        scored: list[tuple[int, Row, int]] = []
+        for rank, row in enumerate(visible):
+            for idx, c in enumerate(row.node.text):
+                if c.lower() == target_ch.lower():
+                    scored.append((abs(rank - selected_rank), row, idx))
+        scored.sort(key=lambda m: m[0])
+        return [(row, idx) for _, row, idx in scored[: len(JUMP_LABELS)]]
+
+    def _start_jump_label_selection(self, target_ch: str) -> None:
+        matches = self._find_jump_matches(target_ch)
+        self._jump_awaiting_char = False
+        if not matches:
+            self._jump_targets = {}
+            self._changed()
+            return
+        self._jump_targets = {
+            label: (row.node.id, idx) for label, (row, idx) in zip(JUMP_LABELS, matches)
+        }
+        self._changed()
+
+    def _complete_jump(self, label: str) -> None:
+        target = self._jump_targets.get(label)
+        self._jump_awaiting_char = False
+        self._jump_targets = {}
+        if target is None:
+            self._changed()
+            return
+        node_id, idx = target
+        self.editing_note = False
+        self.selected_id = node_id
+        self.cursor = idx
+        self._changed()
+
+    def _handle_jump_key(self, event: events.Key) -> None:
+        event.stop()
+        if event.key == "escape":
+            self._cancel_jump()
+            return
+        ch = event.character
+        if self._jump_awaiting_char:
+            if ch:
+                self._start_jump_label_selection(ch)
+            else:
+                self._cancel_jump()
+            return
+        if ch and ch in self._jump_targets:
+            self._complete_jump(ch)
+        else:
+            self._cancel_jump()
+
+    def _labels_for_node(self, node_id: str) -> dict[int, str]:
+        return {idx: label for label, (nid, idx) in self._jump_targets.items() if nid == node_id}
+
     def _indent(self) -> None:
         row = self._current_row()
         if row is None or row.is_header:
@@ -329,6 +449,10 @@ class OutlineView(Static, can_focus=True):
             return
         node = row.node
         key = event.key
+
+        if self._jump_awaiting_char or self._jump_targets:
+            self._handle_jump_key(event)
+            return
 
         if key == "escape":
             event.stop()
@@ -557,6 +681,9 @@ class OutlineView(Static, can_focus=True):
         elif ch == "/":
             event.stop()
             self.app.action_search()
+        elif ch == "s":
+            event.stop()
+            self._start_jump()
         elif ch and ch.isprintable() and not key.startswith(("ctrl+", "alt+")):
             # swallow other printable keys in NORMAL mode rather than typing them
             event.stop()
@@ -600,6 +727,9 @@ class OutlineView(Static, can_focus=True):
         _highlight_tags(text_segment)
         if is_selected and not self.editing_note:
             text_segment = _apply_cursor(text_segment, self.cursor, self.mode)
+        labels = self._labels_for_node(node.id)
+        if labels:
+            text_segment = _overlay_labels(text_segment, labels)
         t.append_text(text_segment)
 
         show_note = bool(node.note) or (is_selected and self.editing_note)

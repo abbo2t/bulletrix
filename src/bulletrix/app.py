@@ -13,7 +13,7 @@ from .models import Node, Outline
 from .outline_view import Mode, OutlineView
 
 NORMAL_HELP = (
-    "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  "
+    "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  s:jump  "
     "Enter:zoom-in  Esc:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  "
     "x:del-char  >>/<<:indent  /:search  ^D:done  ^O:note  ^H:hide-done  "
     "^S:save  q:quit"
@@ -87,6 +87,9 @@ class BulletrixApp(App):
         return " › ".join(crumbs)
 
     def _status_text(self) -> str:
+        jump_hint = self.outline_view.jump_hint
+        if jump_hint:
+            return f"-- JUMP --  {jump_hint}  (Esc to cancel)"
         hide = "on" if self.outline.hide_completed else "off"
         mode = self.outline_view.mode
         help_text = NORMAL_HELP if mode is Mode.NORMAL else INSERT_HELP
@@ -107,6 +110,8 @@ class BulletrixApp(App):
         self.outline_view.cursor = 0
         self.outline_view.editing_note = False
         self.outline_view.mode = Mode.NORMAL
+        self.outline_view._jump_awaiting_char = False
+        self.outline_view._jump_targets = {}
         self._handle_change()
         self.outline_view.refresh(layout=True)
 
