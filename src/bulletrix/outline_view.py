@@ -235,6 +235,16 @@ class OutlineView(Static, can_focus=True):
             row.node.collapsed = not row.node.collapsed
         self._changed()
 
+    def _zoom_in(self, row: Row, node: Node) -> None:
+        if row.is_header:
+            return
+        self.outline.zoom_in(node)
+        self.selected_id = node.id
+        self.cursor = len(node.text)
+        self.editing_note = False
+        self._enter_normal()
+        self._changed()
+
     def _indent(self) -> None:
         row = self._current_row()
         if row is None or row.is_header:
@@ -377,13 +387,7 @@ class OutlineView(Static, can_focus=True):
                 self._changed()
         elif key == "ctrl+right":
             event.stop()
-            if not row.is_header:
-                self.outline.zoom_in(node)
-                self.selected_id = node.id
-                self.cursor = len(node.text)
-                self.editing_note = False
-                self._enter_normal()
-                self._changed()
+            self._zoom_in(row, node)
         elif key == "ctrl+left":
             event.stop()
             popped = self.outline.zoom_out()
@@ -465,6 +469,15 @@ class OutlineView(Static, can_focus=True):
             if ch in ("o", "c", "a"):
                 event.stop()
                 self._fold(row, ch)
+            return
+
+        if key == "enter":
+            event.stop()
+            self._zoom_in(row, node)
+            return
+        if key == "space":
+            event.stop()
+            self._fold(row, "a")
             return
 
         if ch == "d":

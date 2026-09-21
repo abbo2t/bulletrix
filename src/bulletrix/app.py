@@ -14,8 +14,8 @@ from .outline_view import Mode, OutlineView
 
 NORMAL_HELP = (
     "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  "
-    ">>/<<:indent  za/zo/zc:fold  gg/G:top/bottom  x:del-char  /:search  "
-    "^D:done  ^O:note  ^H:hide-done  ^S:save  ^Q:quit"
+    "Enter:zoom-in  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  "
+    ">>/<<:indent  /:search  ^D:done  ^O:note  ^H:hide-done  ^S:save  ^Q:quit"
 )
 INSERT_HELP = "Esc:normal  Enter:new line  Tab/⇧Tab:indent  Backspace/Delete:edit  ^D:done  ^O:note"
 

@@ -242,6 +242,52 @@ async def test_za_toggles_fold_on_children(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_space_toggles_fold_on_children(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"parent")
+        await pilot.press("enter")
+        await pilot.press(*"child")
+        await pilot.press("tab")
+        await pilot.press("escape")
+        await pilot.press("k")  # select "parent"
+
+        await pilot.press("space")
+        rows = app.outline.flatten()
+        assert [r.node.text for r in rows] == ["parent"]
+
+        await pilot.press("space")
+        rows = app.outline.flatten()
+        assert [r.node.text for r in rows] == ["parent", "child"]
+
+
+@pytest.mark.asyncio
+async def test_enter_in_normal_mode_zooms_in(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("enter")
+        assert app.outline.zoom_root.text == "project"
+        assert app.outline_view.mode is Mode.NORMAL
+
+
+@pytest.mark.asyncio
+async def test_enter_in_normal_mode_on_header_is_a_noop(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("enter")  # zoom in; selection is now the header row
+        stack_depth = len(app.outline.zoom_stack)
+        await pilot.press("enter")  # pressing it again on the header must not re-zoom
+        assert len(app.outline.zoom_stack) == stack_depth
+
+
+@pytest.mark.asyncio
 async def test_tab_indents_and_shift_tab_outdents(tmp_path):
     app = make_app(tmp_path)
     async with app.run_test() as pilot:
