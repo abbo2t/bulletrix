@@ -30,22 +30,18 @@ def _highlight_tags(text_obj: Text) -> None:
 
 
 def _apply_cursor(text_obj: Text, cursor: int, mode: Mode) -> Text:
+    # Styles an existing character cell rather than inserting a glyph, so the
+    # cursor never shifts surrounding text (a real terminal caret isn't an
+    # option here: Textual hides the OS cursor for the whole app lifetime and
+    # even its own Input/TextArea widgets fake theirs this same way).
     length = len(text_obj.plain)
     cursor = max(0, min(cursor, length))
-    if mode is Mode.INSERT:
-        # a thin bar between characters, like vim's insert-mode caret
-        before, after = text_obj[:cursor], text_obj[cursor:]
-        result = Text()
-        result.append_text(before)
-        result.append("│", style="bold yellow")
-        result.append_text(after)
-        return result
-    # NORMAL mode: a solid block over the character, like vim's normal-mode cursor
+    style = "underline bold yellow" if mode is Mode.INSERT else "reverse"
     result = text_obj.copy()
     if cursor >= length:
-        result.append(" ", style="reverse")
+        result.append(" ", style=style)
     else:
-        result.stylize("reverse", cursor, cursor + 1)
+        result.stylize(style, cursor, cursor + 1)
     return result
 
 
