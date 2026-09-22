@@ -231,6 +231,129 @@ async def test_q_types_normally_in_insert_mode(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_s_enters_jump_awaiting_char(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        assert app.outline_view._jump_awaiting_char is True
+        assert app.outline_view.jump_hint is not None
+
+
+@pytest.mark.asyncio
+async def test_s_types_normally_in_insert_mode(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press("s")
+        assert app.outline_view.mode is Mode.INSERT
+        assert app.outline_view._jump_awaiting_char is False
+        rows = app.outline.flatten()
+        assert rows[0].node.text == "s"
+
+
+@pytest.mark.asyncio
+async def test_jump_finds_matches_and_labels_dont_touch_the_buffer(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"apple")
+        await pilot.press("enter")
+        await pilot.press(*"banana")
+        await pilot.press("escape")
+
+        apple = app.outline.root.children[0]
+        banana = app.outline.root.children[1]
+        assert apple.text == "apple"
+        assert banana.text == "banana"
+
+        await pilot.press("s")
+        await pilot.press("a")
+        targets = app.outline_view._jump_targets
+        # "apple" has one 'a' (index 0), "banana" has three (indices 1, 3, 5)
+        assert len(targets) == 4
+        # the real buffers must be completely untouched by label assignment
+        assert apple.text == "apple"
+        assert banana.text == "banana"
+
+        # the rendered label glyph replaces a character for display only
+        rendered = app.outline_view.render().plain
+        assert "apple" not in rendered
+        assert apple.text == "apple"
+
+
+@pytest.mark.asyncio
+async def test_jump_label_moves_cursor_to_target_and_restores_buffer(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"apple")
+        await pilot.press("enter")
+        await pilot.press(*"banana")
+        await pilot.press("escape")
+        apple = app.outline.root.children[0]
+
+        await pilot.press("s")
+        await pilot.press("a")
+        label_for_apple = next(
+            label
+            for label, (node_id, _idx) in app.outline_view._jump_targets.items()
+            if node_id == apple.id
+        )
+        await pilot.press(label_for_apple)
+
+        assert app.outline_view.selected_id == apple.id
+        assert app.outline_view.cursor == 0
+        assert app.outline_view._jump_targets == {}
+        assert app.outline_view._jump_awaiting_char is False
+        # jumping is purely a selection change — text must be untouched
+        assert apple.text == "apple"
+        rendered = app.outline_view.render().plain
+        assert "apple" in rendered
+        assert "banana" in rendered
+
+
+@pytest.mark.asyncio
+async def test_jump_with_no_matches_cancels_cleanly(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"hello")
+        await pilot.press("escape")
+        await pilot.press("s")
+        await pilot.press("z")  # no 'z' anywhere in "hello"
+        assert app.outline_view._jump_targets == {}
+        assert app.outline_view._jump_awaiting_char is False
+        assert app.outline_view.mode is Mode.NORMAL
+
+
+@pytest.mark.asyncio
+async def test_jump_invalid_label_cancels_without_moving(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"apple")
+        await pilot.press("escape")
+        before = app.outline_view.selected_id
+        await pilot.press("s")
+        await pilot.press("a")
+        assert app.outline_view._jump_targets  # matches exist
+        await pilot.press("9")  # not a valid label
+        assert app.outline_view._jump_targets == {}
+        assert app.outline_view.selected_id == before
+
+
+@pytest.mark.asyncio
+async def test_escape_cancels_jump(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.press("escape")
+        assert app.outline_view._jump_awaiting_char is False
+        assert app.outline_view._jump_targets == {}
+        assert app.outline_view.mode is Mode.NORMAL
+
+
+@pytest.mark.asyncio
 async def test_cc_clears_line_and_enters_insert(tmp_path):
     app = make_app(tmp_path)
     async with app.run_test() as pilot:
