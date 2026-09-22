@@ -339,8 +339,6 @@ class OutlineView(Static, can_focus=True):
                 self._changed()
             elif self._pending is not None:
                 self._pending = None
-            else:
-                self._zoom_out()
             return
 
         if self._handle_shared_key(row, node, key, event):
@@ -537,6 +535,12 @@ class OutlineView(Static, can_focus=True):
             if self.cursor < len(buf):
                 self.cursor += 1
                 self.refresh(layout=True)
+        elif ch == "H":
+            event.stop()
+            self._zoom_out()
+        elif ch == "L":
+            event.stop()
+            self._zoom_in(row, node)
         elif ch == "j":
             event.stop()
             self._move_selection(1)

@@ -150,7 +150,7 @@ async def test_dd_refuses_to_delete_the_only_top_level_item(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_escape_in_normal_mode_zooms_out(tmp_path):
+async def test_h_in_normal_mode_zooms_out(tmp_path):
     app = make_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.press("i")
@@ -159,8 +159,36 @@ async def test_escape_in_normal_mode_zooms_out(tmp_path):
         await pilot.press("enter")  # zoom in
         assert app.outline.zoom_root.text == "project"
 
-        await pilot.press("escape")  # zoom back out, like ctrl+left
+        await pilot.press("H")  # zoom back out
         assert app.outline.zoom_root is app.outline.root
+
+
+@pytest.mark.asyncio
+async def test_l_in_normal_mode_zooms_in(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("L")  # zoom in
+        assert app.outline.zoom_root.text == "project"
+
+        await pilot.press("H")  # zoom back out
+        assert app.outline.zoom_root is app.outline.root
+
+
+@pytest.mark.asyncio
+async def test_escape_does_not_zoom_out(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("enter")  # zoom in
+        assert app.outline.zoom_root.text == "project"
+
+        await pilot.press("escape")  # should NOT zoom out
+        assert app.outline.zoom_root.text == "project"
 
 
 @pytest.mark.asyncio
