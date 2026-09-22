@@ -50,22 +50,34 @@ def _apply_cursor(text_obj: Text, cursor: int, mode: Mode) -> Text:
 
 
 def _overlay_labels(text_obj: Text, labels: dict[int, str]) -> Text:
-    # Substitutes the label glyph in place of the matched character for this
-    # render only (the real node.text is never touched), so — same principle
-    # as the cursor — nothing shifts.
+    # Highlights the matched character in blue and replaces the character
+    # to its right with the label (or appends if at the end). This render-only
+    # modification keeps the original text untouched.
     if not labels:
         return text_obj
-    result = text_obj
-    length = len(result.plain)
-    for idx, label in labels.items():
-        if idx >= length:
-            continue
-        before, after = result[:idx], result[idx + 1 :]
-        rebuilt = Text()
-        rebuilt.append_text(before)
-        rebuilt.append(label, style="bold black on yellow")
-        rebuilt.append_text(after)
-        result = rebuilt
+
+    result = Text()
+    text = text_obj.plain
+    length = len(text)
+
+    # Build a map of positions where labels should appear (replacing or appending)
+    label_positions = {idx + 1: labels[idx] for idx in labels.keys()}
+
+    for i in range(length):
+        if i in labels:
+            # Append the matching character with blue highlight
+            result.append(text[i], style="bold white on #2f69df")
+        elif i in label_positions:
+            # Replace this character with the label
+            result.append(label_positions[i], style="bold white on #ff007c")
+        else:
+            result.append(text[i])
+
+    # Handle labels that go beyond the text length (append them)
+    for pos in sorted(label_positions.keys()):
+        if pos >= length:
+            result.append(label_positions[pos], style="bold white on #ff007c")
+
     return result
 
 
