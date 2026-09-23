@@ -14,7 +14,8 @@ from .outline_view import OutlineView
 
 HELP = (
     "Enter:new  Tab/⇧Tab:indent  ^↑↓:move  ^→/^←:zoom  "
-    "^D:done  ^K:collapse  ^O:note  ^N:child  ^F:search  ^H:hide-done  ^S:save  ^Q:quit"
+    "^D:done  ^K:collapse  ^O:note  ^N:child  ^F:search  ^H:hide-done  "
+    "^C:copy  ^S:save  ^Q:quit"
 )
 
 
@@ -50,6 +51,7 @@ class BulletrixApp(App):
         ("ctrl+f", "search", "Search"),
         ("ctrl+s", "save_now", "Save"),
         ("ctrl+h", "toggle_hide_completed", "Hide done"),
+        ("ctrl+c", "copy_task", "Copy task"),
         ("ctrl+q", "quit", "Quit"),
         ("escape", "close_search", "Close search"),
     ]
@@ -126,6 +128,13 @@ class BulletrixApp(App):
         self.outline.hide_completed = not self.outline.hide_completed
         self._handle_change()
         self.outline_view.refresh()
+
+    def action_copy_task(self) -> None:
+        node = self.outline.find(self.outline_view.selected_id)
+        if node is None:
+            return
+        self.copy_to_clipboard(node.text)
+        self.query_one("#status", Static).update(self._status_text() + "  [copied]")
 
     def action_save_now(self) -> None:
         self._sync_view_state()

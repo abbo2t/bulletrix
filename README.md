@@ -83,8 +83,13 @@ first, just click/select a bullet and type.
 | `Ctrl+N` | add a child under the selected bullet |
 | `Ctrl+F` | search |
 | `Ctrl+H` | hide/show completed items |
+| `Ctrl+C` | copy the selected bullet's text to the clipboard |
 | `Ctrl+S` | save now (autosave already covers you, but this is instant) |
 | `Ctrl+Q` | quit |
+
+> `Ctrl+C` copies via the terminal's OSC 52 clipboard sequence rather than
+> shelling out to `pbcopy`/`xclip`/`clip.exe`, so it works over SSH and in
+> WSL2 with Windows Terminal without any extra setup.
 
 > A separate vim-style modal editing mode (Normal/Insert, `hjkl`, `dd`, `gg`,
 > and a [flash.nvim](https://github.com/folke/flash.nvim)-style jump-to-character
