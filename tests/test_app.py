@@ -175,6 +175,51 @@ async def test_autosave_persists_to_disk_and_reloads(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reopening_restores_zoom_level_and_cursor_position(tmp_path):
+    path = tmp_path / "outline.json"
+    app = BulletrixApp(path=path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"project")
+        await pilot.press("escape")
+        await pilot.press("ctrl+right")  # zoom in on "project"
+        await pilot.press("o")
+        await pilot.press(*"task one")
+        await pilot.press("escape")
+        # plain cursor movement (no text edits) must still be captured at quit,
+        # since it doesn't go through the autosave-on-change path
+        await pilot.press("0")
+        await pilot.press("l")
+        selected_id = app.outline_view.selected_id
+        cursor = app.outline_view.cursor
+        app.action_quit()
+
+    app2 = BulletrixApp(path=path)
+    async with app2.run_test():
+        assert app2.outline.zoom_root.text == "project"
+        assert app2.outline_view.selected_id == selected_id
+        assert app2.outline_view.cursor == cursor
+
+
+@pytest.mark.asyncio
+async def test_reopening_falls_back_to_first_row_when_selected_node_is_gone(tmp_path):
+    path = tmp_path / "outline.json"
+    app = BulletrixApp(path=path)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press(*"only item")
+        await pilot.press("escape")
+        # simulate a selection that no longer resolves (e.g. hand-edited file)
+        app.outline_view.selected_id = "no-such-node-id"
+        app.action_quit()
+
+    app2 = BulletrixApp(path=path)
+    async with app2.run_test():
+        rows = app2.outline.flatten()
+        assert app2.outline_view.selected_id == rows[0].node.id
+
+
+@pytest.mark.asyncio
 async def test_new_bullets_grow_the_visible_widget_height(tmp_path):
     """Regression test: refresh() alone repaints in place but does not
     resize the widget, so newly-added lines were being clipped out of

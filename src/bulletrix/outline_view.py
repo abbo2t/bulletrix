@@ -32,9 +32,13 @@ class OutlineView(Static, can_focus=True):
         super().__init__()
         self.outline = outline
         self.on_change = on_change
-        first_row = outline.flatten()[0]
-        self.selected_id: str = first_row.node.id
-        self.cursor: int = len(first_row.node.text)
+        rows = outline.flatten()
+        restored = next((r for r in rows if r.node.id == outline.selected_id), None)
+        row = restored or rows[0]
+        self.selected_id: str = row.node.id
+        self.cursor: int = len(row.node.text)
+        if restored is not None:
+            self.cursor = max(0, min(outline.cursor, len(row.node.text)))
         self.editing_note: bool = False
 
     # -- helpers -----------------------------------------------------------
