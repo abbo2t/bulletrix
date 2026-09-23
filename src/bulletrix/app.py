@@ -13,7 +13,7 @@ from .models import Node, Outline
 from .outline_view import Mode, OutlineView
 
 NORMAL_HELP = (
-    "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  s:jump  "
+    "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy:copy  hjkl:move  s:jump  "
     "Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  "
     "x:del-char  >>/<<:indent  /:search  ^D:done  ^O:note  ^H:hide-done  "
     "^S:save  q:quit"
@@ -95,9 +95,14 @@ class BulletrixApp(App):
         help_text = NORMAL_HELP if mode is Mode.NORMAL else INSERT_HELP
         return f"-- {mode.value} --  {help_text}  |  hide-done:{hide}"
 
+    def _sync_view_state(self) -> None:
+        self.outline.selected_id = self.outline_view.selected_id
+        self.outline.cursor = self.outline_view.cursor
+
     def _handle_change(self) -> None:
         self.query_one("#breadcrumb", Static).update(self._breadcrumb_text())
         self.query_one("#status", Static).update(self._status_text())
+        self._sync_view_state()
         storage.save(self.outline, self.path)
 
     def _reveal(self, node: Node) -> None:
@@ -133,11 +138,20 @@ class BulletrixApp(App):
         self._handle_change()
         self.outline_view.refresh()
 
+    def action_copy_task(self) -> None:
+        node = self.outline.find(self.outline_view.selected_id)
+        if node is None:
+            return
+        self.copy_to_clipboard(node.text)
+        self.query_one("#status", Static).update(self._status_text() + "  [copied]")
+
     def action_save_now(self) -> None:
+        self._sync_view_state()
         storage.save(self.outline, self.path)
         self.query_one("#status", Static).update(self._status_text() + "  [saved]")
 
     def action_quit(self) -> None:
+        self._sync_view_state()
         storage.save(self.outline, self.path)
         self.exit()
 

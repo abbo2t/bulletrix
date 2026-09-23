@@ -78,16 +78,47 @@ class Outline:
             self.root.children.append(first)
         self.zoom_stack: list[Node] = [self.root]
         self.hide_completed: bool = False
+        self.selected_id: Optional[str] = None
+        self.cursor: int = 0
+
+    def find(self, node_id: str) -> Optional[Node]:
+        def walk(node: Node) -> Optional[Node]:
+            if node.id == node_id:
+                return node
+            for child in node.children:
+                found = walk(child)
+                if found is not None:
+                    return found
+            return None
+
+        return walk(self.root)
 
     # -- persistence -----------------------------------------------------
     def to_dict(self) -> dict:
-        return {"root": self.root.to_dict(), "hide_completed": self.hide_completed}
+        return {
+            "root": self.root.to_dict(),
+            "hide_completed": self.hide_completed,
+            "zoom_stack": [n.id for n in self.zoom_stack],
+            "selected_id": self.selected_id,
+            "cursor": self.cursor,
+        }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Outline":
         root = Node.from_dict(data["root"])
         outline = cls(root)
         outline.hide_completed = data.get("hide_completed", False)
+
+        zoom_stack = [outline.root]
+        for node_id in data.get("zoom_stack", [])[1:]:
+            node = outline.find(node_id)
+            if node is None:
+                break
+            zoom_stack.append(node)
+        outline.zoom_stack = zoom_stack
+
+        outline.selected_id = data.get("selected_id")
+        outline.cursor = data.get("cursor", 0)
         return outline
 
     # -- zoom --------------------------------------------------------------

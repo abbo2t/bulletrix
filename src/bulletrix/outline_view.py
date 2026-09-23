@@ -3,8 +3,9 @@
 Editing is modal, vim-style: NORMAL mode drives navigation and structural
 commands (movement, indent, delete, fold, ...); INSERT mode is where
 character keys land in the buffer. `i`/`a`/`I`/`A`/`o`/`O`/`cc` enter
-INSERT; `Escape` returns to NORMAL. Not implemented (out of scope for this
-pass): undo, yank/paste, and numeric count prefixes (e.g. `3j`).
+INSERT; `Escape` returns to NORMAL. `yy` copies the current line's text to
+the system clipboard. Not implemented (out of scope for this pass): undo,
+in-app paste, and numeric count prefixes (e.g. `3j`).
 """
 from __future__ import annotations
 
@@ -88,9 +89,13 @@ class OutlineView(Static, can_focus=True):
         super().__init__()
         self.outline = outline
         self.on_change = on_change
-        first_row = outline.flatten()[0]
-        self.selected_id: str = first_row.node.id
-        self.cursor: int = len(first_row.node.text)
+        rows = outline.flatten()
+        restored = next((r for r in rows if r.node.id == outline.selected_id), None)
+        row = restored or rows[0]
+        self.selected_id: str = row.node.id
+        self.cursor: int = len(row.node.text)
+        if restored is not None:
+            self.cursor = max(0, min(outline.cursor, len(row.node.text)))
         self.editing_note: bool = False
         self.mode: Mode = Mode.NORMAL
         self._pending: Optional[str] = None
@@ -609,6 +614,11 @@ class OutlineView(Static, can_focus=True):
                 event.stop()
                 self._fold(row, ch)
             return
+        if pending == "y":
+            if ch == "y":
+                event.stop()
+                self.app.action_copy_task()
+            return
 
         if key == "enter":
             event.stop()
@@ -635,6 +645,9 @@ class OutlineView(Static, can_focus=True):
         elif ch == "z":
             event.stop()
             self._pending = "z"
+        elif ch == "y":
+            event.stop()
+            self._pending = "y"
         elif ch == "i":
             event.stop()
             self._enter_insert()
