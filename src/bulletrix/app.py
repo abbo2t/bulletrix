@@ -87,9 +87,14 @@ class BulletrixApp(App):
         hide = "on" if self.outline.hide_completed else "off"
         return f"{HELP}  |  hide-done:{hide}"
 
+    def _sync_view_state(self) -> None:
+        self.outline.selected_id = self.outline_view.selected_id
+        self.outline.cursor = self.outline_view.cursor
+
     def _handle_change(self) -> None:
         self.query_one("#breadcrumb", Static).update(self._breadcrumb_text())
         self.query_one("#status", Static).update(self._status_text())
+        self._sync_view_state()
         storage.save(self.outline, self.path)
 
     def _reveal(self, node: Node) -> None:
@@ -123,10 +128,12 @@ class BulletrixApp(App):
         self.outline_view.refresh()
 
     def action_save_now(self) -> None:
+        self._sync_view_state()
         storage.save(self.outline, self.path)
         self.query_one("#status", Static).update(self._status_text() + "  [saved]")
 
     def action_quit(self) -> None:
+        self._sync_view_state()
         storage.save(self.outline, self.path)
         self.exit()
 

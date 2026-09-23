@@ -149,6 +149,45 @@ def test_serialization_round_trip():
     assert restored.root.children[1].completed is True
 
 
+def test_serialization_round_trip_preserves_zoom_and_cursor():
+    outline, a, b, c = make_outline()
+    outline.zoom_in(a)
+    outline.selected_id = a.id
+    outline.cursor = 2
+
+    data = outline.to_dict()
+    restored = Outline.from_dict(data)
+
+    assert restored.zoom_root.text == "A"
+    assert restored.selected_id == a.id
+    assert restored.cursor == 2
+
+
+def test_from_dict_truncates_zoom_stack_at_first_unresolvable_id():
+    outline, a, b, c = make_outline()
+    outline.zoom_in(a)
+    data = outline.to_dict()
+    data["zoom_stack"].append("no-such-node-id")
+
+    restored = Outline.from_dict(data)
+
+    assert restored.zoom_root.text == "A"
+    assert restored.zoom_out().text == "A"
+
+
+def test_from_dict_passes_through_a_selected_id_that_no_longer_resolves():
+    # Outline itself doesn't validate selected_id against the tree -- it's
+    # a pass-through for the caller (OutlineView) to fall back on.
+    outline, a, b, c = make_outline()
+    data = outline.to_dict()
+    data["selected_id"] = "no-such-node-id"
+
+    restored = Outline.from_dict(data)
+
+    assert restored.selected_id == "no-such-node-id"
+    assert restored.find("no-such-node-id") is None
+
+
 def test_tags_extraction():
     n = Node(text="buy milk #groceries @home")
     assert n.tags() == ["#groceries", "@home"]
