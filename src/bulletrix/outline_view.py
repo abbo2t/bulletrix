@@ -4,8 +4,9 @@ Editing is modal, vim-style: NORMAL mode drives navigation and structural
 commands (movement, indent, delete, fold, ...); INSERT mode is where
 character keys land in the buffer. `i`/`a`/`I`/`A`/`o`/`O`/`cc` enter
 INSERT; `Escape` returns to NORMAL. `yy` copies the current line's text to
-the system clipboard. Not implemented (out of scope for this pass): undo,
-in-app paste, and numeric count prefixes (e.g. `3j`).
+the system clipboard. `u` undoes and `Ctrl+R` redoes (NORMAL mode only,
+matching vim). Not implemented (out of scope for this pass): in-app paste
+and numeric count prefixes (e.g. `3j`).
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from .models import TAG_RE, Node, Outline, Row
+from .undo import UndoStack
 
 
 class Mode(Enum):
@@ -101,6 +103,8 @@ class OutlineView(Static, can_focus=True):
         self._pending: Optional[str] = None
         self._jump_awaiting_char: bool = False
         self._jump_targets: dict[str, tuple[str, int]] = {}
+        self._undo_stack = UndoStack()
+        self._edit_group: Optional[str] = None
 
     # -- helpers -----------------------------------------------------------
     def _rows(self) -> list[Row]:
@@ -130,6 +134,9 @@ class OutlineView(Static, can_focus=True):
         self.mode = Mode.INSERT
         if cursor is not None:
             self.cursor = cursor
+        # each INSERT session is its own undo group, even if it lands back
+        # on the same node/buffer as a previous session.
+        self._break_edit_group()
 
     def _enter_normal(self) -> None:
         self.mode = Mode.NORMAL
@@ -150,6 +157,47 @@ class OutlineView(Static, can_focus=True):
             if row.node.note:
                 line += 1
         return result
+
+    # -- undo/redo -----------------------------------------------------------
+    def _snapshot(self) -> dict:
+        data = self.outline.to_dict()
+        data["_view_selected_id"] = self.selected_id
+        data["_view_cursor"] = self.cursor
+        data["_view_editing_note"] = self.editing_note
+        return data
+
+    def _restore(self, snapshot: dict) -> None:
+        restored = Outline.from_dict(snapshot)
+        self.outline.root = restored.root
+        self.outline.zoom_stack = restored.zoom_stack
+        self.outline.hide_completed = restored.hide_completed
+        self.selected_id = snapshot.get("_view_selected_id") or restored.root.id
+        self.cursor = snapshot.get("_view_cursor", 0)
+        self.editing_note = snapshot.get("_view_editing_note", False)
+        self._changed()
+
+    def _checkpoint(self, group: Optional[str] = None) -> None:
+        """Record undo history before a mutation. `group` coalesces consecutive
+        edits (e.g. typing) sharing the same group key into a single undo step."""
+        if group is not None and group == self._edit_group:
+            return
+        self._undo_stack.checkpoint(self._snapshot())
+        self._edit_group = group
+
+    def _break_edit_group(self) -> None:
+        self._edit_group = None
+
+    def _undo(self) -> None:
+        snapshot = self._undo_stack.undo(self._snapshot())
+        if snapshot is not None:
+            self._break_edit_group()
+            self._restore(snapshot)
+
+    def _redo(self) -> None:
+        snapshot = self._undo_stack.redo(self._snapshot())
+        if snapshot is not None:
+            self._break_edit_group()
+            self._restore(snapshot)
 
     def _scroll_selected_into_view(self) -> None:
         target = None
@@ -186,6 +234,7 @@ class OutlineView(Static, can_focus=True):
 
     # -- selection movement ------------------------------------------------
     def _move_selection(self, delta: int, cursor_at_end: bool = False) -> None:
+        self._break_edit_group()
         rows = self._rows()
         idx = next((i for i, r in enumerate(rows) if r.node.id == self.selected_id), 0)
         new_idx = max(0, min(len(rows) - 1, idx + delta))
@@ -209,6 +258,7 @@ class OutlineView(Static, can_focus=True):
 
     # -- mutations -----------------------------------------------------------
     def _split_line(self, row: Row) -> None:
+        self._checkpoint()
         node = row.node
         text = node.text
         before, after = text[: self.cursor], text[self.cursor :]
@@ -224,6 +274,7 @@ class OutlineView(Static, can_focus=True):
         self._changed()
 
     def _new_child(self, row: Row) -> None:
+        self._checkpoint()
         node = row.node
         new_node = Node(text="")
         new_node.parent = node
@@ -235,6 +286,7 @@ class OutlineView(Static, can_focus=True):
         self._changed()
 
     def _open_below(self, row: Row) -> None:
+        self._checkpoint()
         node = row.node
         new_node = Node(text="")
         if row.is_header:
@@ -251,6 +303,7 @@ class OutlineView(Static, can_focus=True):
             # there's nothing "above" a page's own title; open a child instead
             self._open_below(row)
             return
+        self._checkpoint()
         node = row.node
         new_node = Node(text="")
         self.outline.insert_sibling_before(node, new_node)
@@ -260,6 +313,7 @@ class OutlineView(Static, can_focus=True):
         self._changed()
 
     def _change_line(self, row: Row) -> None:
+        self._checkpoint()
         row.node.text = ""
         row.node.touch()
         self.selected_id = row.node.id
@@ -274,6 +328,7 @@ class OutlineView(Static, can_focus=True):
             return
         if parent is self.outline.root and len(parent.children) == 1:
             return  # keep at least one top-level item
+        self._checkpoint()
         rows = self._rows()
         idx = next(i for i, r in enumerate(rows) if r.node.id == node.id)
         self.outline.remove(node)
@@ -288,6 +343,7 @@ class OutlineView(Static, can_focus=True):
     def _fold(self, row: Row, which: str) -> None:
         if not row.has_children:
             return
+        self._checkpoint()
         if which == "o":
             row.node.collapsed = False
         elif which == "c":
@@ -395,20 +451,27 @@ class OutlineView(Static, can_focus=True):
         row = self._current_row()
         if row is None or row.is_header:
             return
+        snapshot = self._snapshot()
         if self.outline.indent(row.node):
+            self._undo_stack.checkpoint(snapshot)
+            self._edit_group = None
             self._changed()
 
     def _outdent(self) -> None:
         row = self._current_row()
         if row is None or row.is_header:
             return
+        snapshot = self._snapshot()
         if self.outline.outdent(row.node):
+            self._undo_stack.checkpoint(snapshot)
+            self._edit_group = None
             self._changed()
 
     def _backspace(self, row: Row) -> None:
         node = row.node
         buf = self._buffer(node)
         if self.cursor > 0:
+            self._checkpoint(group=f"type:{node.id}:{self.editing_note}")
             new_buf = buf[: self.cursor - 1] + buf[self.cursor :]
             self._set_buffer(node, new_buf)
             self.cursor -= 1
@@ -417,8 +480,11 @@ class OutlineView(Static, can_focus=True):
             return
         if self.editing_note or row.is_header:
             return
+        snapshot = self._snapshot()
         target = self.outline.merge_backward(node)
         if target is not None:
+            self._undo_stack.checkpoint(snapshot)
+            self._edit_group = None
             offset = getattr(target, "_merge_cursor", len(target.text))
             self.selected_id = target.id
             self.cursor = offset
@@ -428,6 +494,7 @@ class OutlineView(Static, can_focus=True):
         node = row.node
         buf = self._buffer(node)
         if self.cursor < len(buf):
+            self._checkpoint(group=f"type:{node.id}:{self.editing_note}")
             new_buf = buf[: self.cursor] + buf[self.cursor + 1 :]
             self._set_buffer(node, new_buf)
             node.touch()
@@ -441,6 +508,7 @@ class OutlineView(Static, can_focus=True):
         idx = self.outline.index_in_parent(node)
         if idx + 1 >= len(parent.children):
             return
+        self._checkpoint()
         nxt = parent.children[idx + 1]
         node.text += nxt.text
         node.children = node.children + nxt.children
@@ -452,6 +520,7 @@ class OutlineView(Static, can_focus=True):
 
     def _insert_char(self, row: Row, ch: str) -> None:
         node = row.node
+        self._checkpoint(group=f"type:{node.id}:{self.editing_note}")
         buf = self._buffer(node)
         new_buf = buf[: self.cursor] + ch + buf[self.cursor :]
         self._set_buffer(node, new_buf)
@@ -506,6 +575,7 @@ class OutlineView(Static, can_focus=True):
             self._move_selection(1)
         elif key == "left":
             event.stop()
+            self._break_edit_group()
             if self.cursor > 0:
                 self.cursor -= 1
                 self.refresh(layout=True)
@@ -513,6 +583,7 @@ class OutlineView(Static, can_focus=True):
                 self._move_selection(-1, cursor_at_end=True)
         elif key == "right":
             event.stop()
+            self._break_edit_group()
             buf = self._buffer(node)
             if self.cursor < len(buf):
                 self.cursor += 1
@@ -521,19 +592,27 @@ class OutlineView(Static, can_focus=True):
                 self._move_selection(1, cursor_at_end=False)
         elif key == "home":
             event.stop()
+            self._break_edit_group()
             self.cursor = 0
             self.refresh(layout=True)
         elif key == "end":
             event.stop()
+            self._break_edit_group()
             self.cursor = len(self._buffer(node))
             self.refresh(layout=True)
         elif key == "ctrl+up":
             event.stop()
+            snapshot = self._snapshot()
             if self.outline.move_up(node):
+                self._undo_stack.checkpoint(snapshot)
+                self._edit_group = None
                 self._changed()
         elif key == "ctrl+down":
             event.stop()
+            snapshot = self._snapshot()
             if self.outline.move_down(node):
+                self._undo_stack.checkpoint(snapshot)
+                self._edit_group = None
                 self._changed()
         elif key == "ctrl+right":
             event.stop()
@@ -544,15 +623,18 @@ class OutlineView(Static, can_focus=True):
         elif key == "ctrl+d":
             event.stop()
             if not row.is_header:
+                self._checkpoint()
                 self.outline.toggle_complete(node)
                 self._changed()
         elif key == "ctrl+k":
             event.stop()
             if row.has_children:
+                self._checkpoint()
                 self.outline.toggle_collapsed(node)
                 self._changed()
         elif key == "ctrl+o":
             event.stop()
+            self._break_edit_group()
             self.editing_note = not self.editing_note
             self.cursor = len(self._buffer(node))
             if self.editing_note:
@@ -566,6 +648,9 @@ class OutlineView(Static, can_focus=True):
         elif key == "ctrl+f":
             event.stop()
             self.app.action_search()
+        elif key == "ctrl+r":
+            event.stop()
+            self._redo()
         else:
             return False
         return True
@@ -713,6 +798,9 @@ class OutlineView(Static, can_focus=True):
         elif ch == "s":
             event.stop()
             self._start_jump()
+        elif ch == "u":
+            event.stop()
+            self._undo()
         elif ch and ch.isprintable() and not key.startswith(("ctrl+", "alt+")):
             # swallow other printable keys in NORMAL mode rather than typing them
             event.stop()

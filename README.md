@@ -15,6 +15,7 @@ WorkFlowy.
 - `#tag` / `@tag` highlighting
 - Full-text search across the whole outline
 - Mark items complete, and optionally hide completed items
+- Undo/redo for edits (typing coalesces into single steps; navigation like zoom and search isn't part of the history)
 - Autosaves to a local JSON file after every edit
 - Import from OPML (e.g. a WorkFlowy export), merged in as new top-level items
 
@@ -63,38 +64,58 @@ launching the TUI.
 
 ### Keybindings
 
-Bulletrix's text is always directly editable — there's no mode to enter
-first, just click/select a bullet and type.
+Editing is modal, vim-style. You start in **NORMAL** mode, where keys are
+commands; `i`/`a`/`I`/`A`/`o`/`O`/`cc` drop you into **INSERT** mode, where
+keys type into the selected bullet's text; `Escape` returns to NORMAL.
+
+**NORMAL mode**
+
+| Key | Action |
+|---|---|
+| `i` / `a` | insert before / after the cursor |
+| `I` / `A` | insert at the start / end of the line |
+| `o` / `O` | open a new bullet below / above and start inserting |
+| `cc` | clear the line's text and start inserting |
+| `dd` | delete the bullet |
+| `x` | delete the character under the cursor |
+| `h` / `l` | move the cursor left/right within the line |
+| `j` / `k` | move the selection down/up |
+| `0` / `$` | jump to the start/end of the line |
+| `gg` / `G` | jump to the first/last visible bullet |
+| `s` | flash.nvim-style jump: press a character, then a label, to jump straight to it |
+| `Tab` / `Shift+Tab` | indent / outdent |
+| `Enter` / `L` | zoom into the selected bullet |
+| `H` | zoom back out |
+| `Space` / `za` | toggle fold; `zo` / `zc` open/close explicitly |
+| `yy` | copy the selected bullet's text to the clipboard |
+| `u` | undo |
+| `Ctrl+R` | redo |
+| `Ctrl+↑` / `Ctrl+↓` | move the bullet up/down among its siblings |
+| `Ctrl+D` | toggle complete |
+| `Ctrl+O` | toggle editing the bullet's note |
+| `Ctrl+N` | add a child under the selected bullet, in INSERT mode |
+| `/` | search |
+| `Ctrl+H` | hide/show completed items |
+| `Ctrl+S` | save now (autosave already covers you, but this is instant) |
+| `q` | quit |
+
+**INSERT mode**
 
 | Key | Action |
 |---|---|
 | _any printable key_ | insert into the selected bullet's text |
 | `Enter` | split the bullet at the cursor into a new one |
-| `Tab` / `Shift+Tab` | indent / outdent |
-| `↑` / `↓` | move the selection up/down |
-| `←` / `→` | move the cursor within the line (or to the adjacent bullet at the start/end of a line) |
-| `Home` / `End` | jump to the start/end of the line |
 | `Backspace` at the start of a line | merge into the previous bullet |
-| `Ctrl+↑` / `Ctrl+↓` | move the bullet up/down among its siblings |
-| `Ctrl+→` / `Ctrl+←` | zoom into the selected bullet / zoom back out |
-| `Ctrl+D` | toggle complete |
-| `Ctrl+K` | collapse/expand children |
-| `Ctrl+O` | toggle editing the bullet's note |
-| `Ctrl+N` | add a child under the selected bullet |
-| `Ctrl+F` | search |
-| `Ctrl+H` | hide/show completed items |
-| `Ctrl+C` | copy the selected bullet's text to the clipboard |
-| `Ctrl+S` | save now (autosave already covers you, but this is instant) |
-| `Ctrl+Q` | quit |
+| `Delete` | delete the character to the right of the cursor |
+| `Escape` | return to NORMAL mode |
+| `Tab` / `Shift+Tab`, `Ctrl+D`, `Ctrl+O`, `Ctrl+N`, `Ctrl+↑`/`Ctrl+↓`, `Ctrl+→`/`Ctrl+←`, `Ctrl+R` | same as NORMAL mode |
 
-> `Ctrl+C` copies via the terminal's OSC 52 clipboard sequence rather than
+`u` and `Ctrl+R` only trigger undo/redo in NORMAL mode — in INSERT mode `u`
+types a literal "u", matching vim.
+
+> `yy` copies via the terminal's OSC 52 clipboard sequence rather than
 > shelling out to `pbcopy`/`xclip`/`clip.exe`, so it works over SSH and in
 > WSL2 with Windows Terminal without any extra setup.
-
-> A separate vim-style modal editing mode (Normal/Insert, `hjkl`, `dd`, `gg`,
-> and a [flash.nvim](https://github.com/folke/flash.nvim)-style jump-to-character
-> feature) exists on the `vim-modal-keybindings` and `flash-jump` branches but
-> hasn't been merged to `main` yet.
 
 ## Development
 
@@ -110,6 +131,7 @@ Layout:
 |---|---|
 | `src/bulletrix/models.py` | The outline data structure and all tree operations (indent, zoom, search, ...) — no UI code |
 | `src/bulletrix/outline_view.py` | The Textual widget: rendering and all keyboard handling |
+| `src/bulletrix/undo.py` | The bounded undo/redo snapshot stack |
 | `src/bulletrix/app.py` | App layout, breadcrumb, search bar, autosave wiring |
 | `src/bulletrix/storage.py` | JSON load/save |
 | `src/bulletrix/opml_import.py` | OPML parsing and merge-import |
@@ -142,8 +164,9 @@ automatically. There's no dedicated tag browser yet; `Ctrl+F` search matches
 tag text like any other text.
 
 **Does it support vim-style keybindings?**
-Not on `main` yet — see the note under Keybindings above about the
-`vim-modal-keybindings` and `flash-jump` branches.
+Yes — editing is modal (NORMAL/INSERT), with `hjkl` movement, `dd`/`cc`
+commands, and a flash.nvim-style `s` jump-to-character feature. See
+Keybindings above.
 
 **Can I export back out to OPML/Markdown/etc.?**
 Not yet — only OPML *import* exists so far.
