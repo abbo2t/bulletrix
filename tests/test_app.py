@@ -118,6 +118,15 @@ async def test_ctrl_d_toggles_completed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ctrl_c_copies_current_task_text(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press(*"buy milk")
+        await pilot.press("ctrl+c")
+        assert app.clipboard == "buy milk"
+
+
+@pytest.mark.asyncio
 async def test_backspace_merges_into_previous_sibling(tmp_path):
     app = make_app(tmp_path)
     async with app.run_test() as pilot:
