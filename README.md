@@ -15,6 +15,7 @@ WorkFlowy.
 - `#tag` / `@tag` highlighting
 - Full-text search across the whole outline
 - Mark items complete, and optionally hide completed items
+- Undo/redo for edits (typing coalesces into single steps; navigation like zoom and search isn't part of the history)
 - Autosaves to a local JSON file after every edit
 - Import from OPML (e.g. a WorkFlowy export), merged in as new top-level items
 
@@ -83,6 +84,8 @@ first, just click/select a bullet and type.
 | `Ctrl+N` | add a child under the selected bullet |
 | `Ctrl+F` | search |
 | `Ctrl+H` | hide/show completed items |
+| `Ctrl+Z` | undo |
+| `Ctrl+Y` (or `Ctrl+Shift+Z`) | redo |
 | `Ctrl+C` | copy the selected bullet's text to the clipboard |
 | `Ctrl+S` | save now (autosave already covers you, but this is instant) |
 | `Ctrl+Q` | quit |
@@ -110,6 +113,7 @@ Layout:
 |---|---|
 | `src/bulletrix/models.py` | The outline data structure and all tree operations (indent, zoom, search, ...) — no UI code |
 | `src/bulletrix/outline_view.py` | The Textual widget: rendering and all keyboard handling |
+| `src/bulletrix/undo.py` | The bounded undo/redo snapshot stack |
 | `src/bulletrix/app.py` | App layout, breadcrumb, search bar, autosave wiring |
 | `src/bulletrix/storage.py` | JSON load/save |
 | `src/bulletrix/opml_import.py` | OPML parsing and merge-import |

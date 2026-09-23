@@ -15,7 +15,7 @@ from .outline_view import OutlineView
 HELP = (
     "Enter:new  Tab/⇧Tab:indent  ^↑↓:move  ^→/^←:zoom  "
     "^D:done  ^K:collapse  ^O:note  ^N:child  ^F:search  ^H:hide-done  "
-    "^C:copy  ^S:save  ^Q:quit"
+    "^Z:undo  ^Y:redo  ^C:copy  ^S:save  ^Q:quit"
 )
 
 
