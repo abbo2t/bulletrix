@@ -64,6 +64,9 @@ pub struct Editor {
     pub notice: Option<&'static str>,
     /// Text to put on the clipboard; the caller takes it and does the I/O.
     pub pending_copy: Option<String>,
+    /// What `PasteBelow` inserts. Internal rather than read back from the
+    /// system clipboard, which terminals generally don't allow.
+    register: Option<String>,
     mode: Mode,
     style: EditingStyle,
     jump: Jump,
@@ -105,6 +108,7 @@ impl Editor {
             should_quit: false,
             notice: None,
             pending_copy: None,
+            register: None,
             mode: match style {
                 EditingStyle::Modal => Mode::Normal,
                 EditingStyle::Traditional => Mode::Insert,
@@ -287,7 +291,12 @@ impl Editor {
                 self.enter_insert(None);
             }
             Action::DeleteNode => self.delete_node(row),
-            Action::CopyLine => self.pending_copy = Some(self.outline.get(node).text.clone()),
+            Action::CopyLine => {
+                let text = self.outline.get(node).text.clone();
+                self.register = Some(text.clone());
+                self.pending_copy = Some(text);
+            }
+            Action::PasteBelow => self.paste_below(row),
 
             Action::EnterInsert(at) => {
                 let len = self.buffer_len(node);
@@ -484,6 +493,26 @@ impl Editor {
             self.outline.insert_sibling_after(row.node, new);
         }
         self.focus_new_node(new);
+    }
+
+    /// A new sibling below `row` with the register's text (text only: no
+    /// note, done state, or children). Like `open_below`, a header row gets
+    /// a first child instead, so the paste stays inside the zoomed view.
+    fn paste_below(&mut self, row: Row) {
+        let Some(text) = self.register.clone() else {
+            self.notice = Some("nothing to paste");
+            return;
+        };
+        self.checkpoint(None);
+        let new = self.outline.create_node(text);
+        if row.is_header {
+            self.outline.add_first_child(row.node, new);
+        } else {
+            self.outline.insert_sibling_after(row.node, new);
+        }
+        self.editing_note = false;
+        self.selected = new;
+        self.cursor = 0;
     }
 
     fn split_line(&mut self, row: Row) {

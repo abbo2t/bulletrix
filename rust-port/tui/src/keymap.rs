@@ -157,7 +157,7 @@ impl Keymap for ModalKeymap {
     fn help(&self, mode: Mode) -> &'static str {
         match mode {
             Mode::Normal => {
-                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy:copy  hjkl:move  s:jump  /:search  \
+                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy/p:copy/paste  hjkl:move  s:jump  /:search  \
                  Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  \
                  Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  ^S:save  q:quit"
             }
@@ -201,6 +201,7 @@ impl ModalKeymap {
             'I' => Action::EnterInsert(InsertAt::LineStart),
             'A' => Action::EnterInsert(InsertAt::LineEnd),
             'o' => Action::OpenBelow,
+            'p' => Action::PasteBelow,
             'O' => Action::OpenAbove,
             'x' => Action::DeleteForward,
             'h' => Action::CharLeft { wrap: false },
@@ -474,6 +475,62 @@ mod tests {
         h.typ("yj");
         assert_eq!(h.ed.pending_copy, None);
         assert_eq!(h.ed.selected, h.a, "the j is swallowed, like dj");
+    }
+
+    #[test]
+    fn p_pastes_a_copy_below_at_the_same_level_without_children() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.typ("jyyp");
+
+        assert_eq!(h.top_level(), ["alpha", "bravo", "bravo", "charlie"]);
+        let pasted = h.ed.selected;
+        assert_ne!(pasted, h.b);
+        assert!(h.ed.outline.get(pasted).children.is_empty());
+        assert_eq!(h.ed.outline.get(h.b).children, [kid]);
+        assert_eq!(h.ed.cursor, 0);
+        assert_eq!(h.ed.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn p_pastes_at_the_current_position_and_level_not_where_copied() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.typ("yyjjp"); // copy alpha, then paste below kid (nested under bravo)
+        let kids: Vec<&str> = h.ed.outline.get(h.b).children.iter().map(|&id| h.text(id)).collect();
+        assert_eq!(kids, ["kid", "alpha"]);
+        assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn p_can_repeat_and_is_one_undo_step_each() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("yypp");
+        assert_eq!(h.top_level(), ["alpha", "alpha", "alpha", "bravo", "charlie"]);
+        h.typ("u");
+        assert_eq!(h.top_level(), ["alpha", "alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn p_on_a_zoomed_header_pastes_as_its_first_child() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.typ("j");
+        h.press(KeyCode::Enter); // zoom into bravo; its header row is selected
+        h.typ("yyp");
+        let kids: Vec<&str> = h.ed.outline.get(h.b).children.iter().map(|&id| h.text(id)).collect();
+        assert_eq!(kids, ["bravo", "kid"]);
+    }
+
+    #[test]
+    fn p_with_nothing_copied_changes_nothing() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("p");
+        assert_eq!(h.ed.notice, Some("nothing to paste"));
+        assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
     }
 
     #[test]
