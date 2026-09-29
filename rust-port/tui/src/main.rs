@@ -30,6 +30,7 @@ use ratatui::Terminal;
 use std::io::{self, Stdout};
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Instant;
 
 fn main() -> ExitCode {
     let opts = match config::resolve(std::env::args().skip(1), config::data_dir().as_deref()) {
@@ -101,6 +102,7 @@ fn run(
     autosave: &mut Autosave,
 ) -> io::Result<()> {
     let mut note: Option<String> = None;
+    let mut mouse = mouse::Mouse::default();
     let mut screen = ui::ScreenMap::default();
     let mut redraw = true;
     while !editor.should_quit {
@@ -115,7 +117,7 @@ fn run(
                 keymap::dispatch(editor, keymap, key) == Some(Action::Save)
             }
             Event::Mouse(ev) => {
-                let actions = mouse::resolve(ev, &screen, editor);
+                let actions = mouse.resolve(ev, &screen, editor, Instant::now());
                 if actions.is_empty() {
                     redraw = false;
                     continue;

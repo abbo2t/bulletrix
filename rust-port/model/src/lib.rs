@@ -180,6 +180,14 @@ impl Outline {
         self.zoom_stack.pop()
     }
 
+    /// Zooms out to breadcrumb `depth` (0 is the top). Returns the item that
+    /// was zoomed out of at that level, or None if already there.
+    pub fn zoom_to(&mut self, depth: usize) -> Option<NodeId> {
+        let child = *self.zoom_stack.get(depth + 1)?;
+        self.zoom_stack.truncate(depth + 1);
+        Some(child)
+    }
+
     pub fn breadcrumb(&self) -> &[NodeId] {
         &self.zoom_stack
     }
@@ -775,6 +783,19 @@ mod tests {
         // stable across process restarts - only the persisted uuid is).
         assert_eq!(restored.breadcrumb().len(), 2);
         assert_eq!(restored.get(restored.zoom_root()).text, "A");
+    }
+
+    #[test]
+    fn zoom_to_truncates_the_breadcrumb_and_returns_the_child_left() {
+        let (mut outline, a, _b, _c, root) = make_outline();
+        let kid = outline.create_node("kid");
+        outline.append_child(a, kid);
+        outline.zoom_in(a);
+        outline.zoom_in(kid);
+
+        assert_eq!(outline.zoom_to(2), None, "already at depth 2");
+        assert_eq!(outline.zoom_to(0), Some(a));
+        assert_eq!(outline.breadcrumb(), [root]);
     }
 
     #[test]

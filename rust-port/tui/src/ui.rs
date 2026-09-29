@@ -7,6 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 type Cells = Vec<(char, Style)>;
 
@@ -16,6 +17,17 @@ type Cells = Vec<(char, Style)>;
 pub struct ScreenMap {
     /// The visible outline lines, top to bottom.
     pub lines: Vec<ScreenLine>,
+    /// Clickable breadcrumb segments (every level but the current one).
+    pub crumbs: Vec<Crumb>,
+    /// Where the search box's text starts, if it's open.
+    pub search: Option<(u16, u16)>,
+}
+
+pub struct Crumb {
+    pub y: u16,
+    pub xs: std::ops::Range<u16>,
+    /// Breadcrumb depth this segment zooms out to.
+    pub depth: usize,
 }
 
 pub struct ScreenLine {
@@ -68,10 +80,18 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         ])
         .split(frame.area());
 
+    let labels = breadcrumb_labels(editor);
     frame.render_widget(
-        Paragraph::new(breadcrumb_text(editor)).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(labels.join(CRUMB_SEPARATOR)).style(Style::default().fg(Color::DarkGray)),
         chunks[0],
     );
+    let mut crumbs = Vec::new();
+    let mut x = chunks[0].x;
+    for (depth, label) in labels.iter().enumerate().take(labels.len() - 1) {
+        let end = x.saturating_add(label.width() as u16);
+        crumbs.push(Crumb { y: chunks[0].y, xs: x..end, depth });
+        x = end.saturating_add(CRUMB_SEPARATOR.width() as u16);
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -126,11 +146,14 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         })
         .collect();
 
+    let mut search = None;
     if let Some((query, cursor)) = editor.search_input() {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Magenta));
+        let inner = block.inner(chunks[2]);
+        search = Some((inner.x, inner.y));
         frame.render_widget(Paragraph::new(search_line(query, cursor)).block(block), chunks[2]);
     }
 
@@ -144,7 +167,11 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         chunks[3],
     );
 
-    ScreenMap { lines: screen_lines }
+    ScreenMap {
+        lines: screen_lines,
+        crumbs,
+        search,
+    }
 }
 
 fn search_line(query: &str, cursor: usize) -> Line<'static> {
@@ -176,7 +203,9 @@ fn clamp_scroll(offset: usize, selected_line: usize, total_lines: usize, viewpor
     offset.min(total_lines.saturating_sub(viewport))
 }
 
-fn breadcrumb_text(editor: &Editor) -> String {
+const CRUMB_SEPARATOR: &str = " › ";
+
+fn breadcrumb_labels(editor: &Editor) -> Vec<String> {
     let outline = &editor.outline;
     outline
         .breadcrumb()
@@ -191,8 +220,7 @@ fn breadcrumb_text(editor: &Editor) -> String {
                 "(untitled)".to_string()
             }
         })
-        .collect::<Vec<_>>()
-        .join(" › ")
+        .collect()
 }
 
 fn status_text(editor: &Editor, keymap: &dyn Keymap) -> String {

@@ -53,6 +53,9 @@ pub enum Action {
     /// Scroll the view by this many lines, moving the selection only if it
     /// would otherwise go off screen.
     Scroll(isize),
+    /// Zoom out to breadcrumb `depth` (0 is the top). From a mouse click,
+    /// so it also cancels a jump or search.
+    ZoomTo(usize),
 
     ToggleHideCompleted,
     /// Puts the selected item's text in the paste register, and queues it
@@ -76,6 +79,8 @@ pub enum SearchOp {
     Right,
     Home,
     End,
+    /// Put the cursor at this character offset (from a click).
+    MoveTo(usize),
     Submit,
     Cancel,
 }

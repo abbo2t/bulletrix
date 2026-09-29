@@ -188,6 +188,13 @@ impl Editor {
             Action::Search(op) => self.search_op(op),
             Action::PlaceCursor { node, cursor, note } => self.place_cursor(node, cursor, note),
             Action::Scroll(lines) => self.scroll(lines),
+            Action::ZoomTo(depth) => {
+                self.jump = Jump::Idle;
+                self.search = None;
+                if let Some(child) = self.outline.zoom_to(depth) {
+                    self.land_on(child);
+                }
+            }
             Action::JumpToFirst => self.jump_to_index(0),
             Action::JumpToLast => self.jump_to_index(usize::MAX),
             _ => {
@@ -347,6 +354,7 @@ impl Editor {
             | Action::Search(_)
             | Action::PlaceCursor { .. }
             | Action::Scroll(_)
+            | Action::ZoomTo(_)
             | Action::JumpToFirst
             | Action::JumpToLast
             | Action::ToggleHideCompleted
@@ -719,6 +727,7 @@ impl Editor {
             SearchOp::Right => input.cursor = (input.cursor + 1).min(len),
             SearchOp::Home => input.cursor = 0,
             SearchOp::End => input.cursor = len,
+            SearchOp::MoveTo(cursor) => input.cursor = cursor.min(len),
             SearchOp::Cancel => self.search = None,
             SearchOp::Submit => {
                 let query = std::mem::take(&mut input.query);
