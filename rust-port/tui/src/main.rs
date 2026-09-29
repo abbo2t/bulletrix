@@ -13,6 +13,7 @@ mod clipboard;
 mod config;
 mod editor;
 mod keymap;
+mod layout;
 mod mouse;
 mod ui;
 mod undo;

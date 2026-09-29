@@ -5,6 +5,7 @@
 
 use crate::action::{Action, FoldOp, InsertAt, SearchOp};
 use crate::config::EditingStyle;
+use crate::layout::{line_of, row_layout, wrap};
 use crate::undo::UndoStack;
 use model::{NodeId, Outline, Row, Subtree};
 
@@ -68,6 +69,8 @@ pub struct Editor {
     pub scroll_offset: usize,
     /// Set by the renderer each frame; 0 means "treat every row as visible".
     pub viewport_height: usize,
+    /// Set by the renderer each frame; 0 means "don't wrap".
+    pub viewport_width: usize,
     pub should_quit: bool,
     /// One-shot message for the status bar (e.g. "no matches"); the caller takes it.
     pub notice: Option<&'static str>,
@@ -115,6 +118,7 @@ impl Editor {
             editing_note: false,
             scroll_offset: 0,
             viewport_height: 0,
+            viewport_width: 0,
             should_quit: false,
             notice: None,
             pending_copy: None,
@@ -164,13 +168,40 @@ impl Editor {
         !self.outline.get(id).note.is_empty() || (id == self.selected && self.editing_note)
     }
 
+    /// Screen lines `row` takes: its wrapped text, plus its wrapped note lines.
     pub fn line_count(&self, row: &Row) -> usize {
-        let note_lines = if self.shows_note(row.node) {
-            self.outline.get(row.node).note.split('\n').count()
+        let cols = row_layout(row);
+        let node = self.outline.get(row.node);
+        let text_lines = wrap(&node.text, cols.text_width(self.viewport_width)).len();
+        let note_lines: usize = if self.shows_note(row.node) {
+            let width = cols.note_width(self.viewport_width);
+            node.note.split('\n').map(|line| wrap(line, width).len()).sum()
         } else {
             0
         };
-        1 + note_lines
+        text_lines + note_lines
+    }
+
+    /// Which of the selected `row`'s screen lines the cursor is on (0 is its first).
+    pub fn cursor_line(&self, row: &Row) -> usize {
+        let cols = row_layout(row);
+        let node = self.outline.get(row.node);
+        let text_lines = wrap(&node.text, cols.text_width(self.viewport_width));
+        if !self.editing_note {
+            return line_of(&text_lines, self.cursor);
+        }
+        let width = cols.note_width(self.viewport_width);
+        let (mut before, mut offset) = (text_lines.len(), self.cursor);
+        for line in node.note.split('\n') {
+            let lines = wrap(line, width);
+            let len = line.chars().count();
+            if offset <= len {
+                return before + line_of(&lines, offset);
+            }
+            offset -= len + 1;
+            before += lines.len();
+        }
+        before - 1
     }
 
     // -- dispatch ------------------------------------------------------------
@@ -482,36 +513,40 @@ impl Editor {
     }
 
     /// Like vim with the mouse on: the view moves, and the selection only
-    /// follows if it would otherwise leave the screen.
+    /// follows if the cursor's line would otherwise leave the screen. When
+    /// it does follow, the cursor goes to the start of the item, so it's on
+    /// the item's first (visible) line.
     fn scroll(&mut self, lines: isize) {
         if self.viewport_height == 0 {
             return;
         }
-        let mut starts = Vec::new(); // (node, first screen line) per row
+        let rows = self.outline.flatten();
+        let mut starts = Vec::with_capacity(rows.len()); // first screen line per row
         let mut total = 0;
-        for row in self.outline.flatten() {
-            starts.push((row.node, total));
-            total += self.line_count(&row);
+        for row in &rows {
+            starts.push(total);
+            total += self.line_count(row);
         }
         let max = total.saturating_sub(self.viewport_height) as isize;
         self.scroll_offset = (self.scroll_offset as isize + lines).clamp(0, max) as usize;
 
         let (top, bottom) = (self.scroll_offset, self.scroll_offset + self.viewport_height);
-        let Some(&(_, selected_line)) = starts.iter().find(|(node, _)| *node == self.selected) else {
+        let Some(i) = rows.iter().position(|r| r.node == self.selected) else {
             return;
         };
-        let target = if selected_line < top {
-            starts.iter().find(|(_, line)| *line >= top)
-        } else if selected_line >= bottom {
-            starts.iter().rev().find(|(_, line)| *line < bottom)
+        let cursor_line = starts[i] + self.cursor_line(&rows[i]);
+        let target = if cursor_line < top {
+            (0..rows.len()).find(|&j| starts[j] >= top)
+        } else if cursor_line >= bottom {
+            (0..rows.len()).rev().find(|&j| starts[j] < bottom)
         } else {
             None
         };
-        if let Some(&(node, _)) = target {
+        if let Some(j) = target {
             self.break_edit_group();
             self.editing_note = false;
-            self.selected = node;
-            self.cursor = self.cursor.min(self.buffer_len(node));
+            self.selected = rows[j].node;
+            self.cursor = 0;
         }
     }
 

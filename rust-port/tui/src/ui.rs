@@ -1,7 +1,9 @@
 use crate::config::EditingStyle;
 use crate::editor::{Editor, Mode};
 use crate::keymap::Keymap;
+use crate::layout::{row_layout, wrap};
 use model::{NodeId, Row, TAG_RE};
+use std::ops::Range;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -25,7 +27,7 @@ pub struct ScreenMap {
 
 pub struct Crumb {
     pub y: u16,
-    pub xs: std::ops::Range<u16>,
+    pub xs: Range<u16>,
     /// Breadcrumb depth this segment zooms out to.
     pub depth: usize,
 }
@@ -35,34 +37,33 @@ pub struct ScreenLine {
     pub node: NodeId,
     /// Screen column of the line's first text character.
     pub text_x: u16,
+    /// The characters of the item's text (or of its note line) on this
+    /// screen line.
+    pub chars: Range<usize>,
+    /// Whether that text wraps onto the next screen line.
+    pub wrapped: bool,
     pub kind: LineKind,
 }
 
+#[derive(Clone, Copy)]
 pub enum LineKind {
     Text {
-        bullet_x: u16,
+        /// Only the first screen line of an item has its bullet.
+        bullet_x: Option<u16>,
         /// Whether clicking the bullet folds/unfolds (the item has children).
         foldable: bool,
     },
-    /// The `line`th line (0-based) of the item's note.
+    /// Part of the `line`th line (0-based) of the item's note.
     Note { line: usize },
 }
 
-/// Column offsets within the outline area where a row's parts start, shared
-/// by drawing and the screen map so the two can't disagree.
-struct RowLayout {
-    bullet: u16,
-    text: u16,
-    note: u16,
-}
-
-fn row_layout(row: &Row) -> RowLayout {
-    let indent = if row.is_header { 0 } else { 2 * row.depth as u16 };
-    RowLayout {
-        bullet: indent,
-        text: indent + 2,
-        note: 2 * row.depth as u16 + 4,
-    }
+/// One screen line of a row, with column positions relative to the outline area.
+struct Rendered {
+    line: Line<'static>,
+    text_col: u16,
+    chars: Range<usize>,
+    wrapped: bool,
+    kind: LineKind,
 }
 
 /// `note` is a transient message (e.g. "saved") shown in the status bar.
@@ -98,53 +99,48 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Blue));
     let inner = block.inner(chunks[1]);
+    let inner_height = inner.height as usize;
+    // Set before laying out: wrapping and line counts depend on the width.
+    editor.viewport_height = inner_height;
+    editor.viewport_width = inner.width as usize;
 
-    let mut lines: Vec<Line> = Vec::new();
-    // Parallel to `lines`: what each one shows, as (node, text column, kind).
-    let mut layout: Vec<(NodeId, u16, LineKind)> = Vec::new();
-    let mut selected_line = 0;
+    let mut rendered: Vec<(NodeId, Rendered)> = Vec::new();
+    let mut cursor_line = 0;
     for row in &editor.outline.flatten() {
         let is_selected = row.node == editor.selected;
         if is_selected {
-            selected_line = lines.len();
+            cursor_line = rendered.len() + editor.cursor_line(row);
         }
-        let rendered = render_row(editor, row, is_selected);
-        let cols = row_layout(row);
-        layout.push((
-            row.node,
-            cols.text,
-            LineKind::Text { bullet_x: cols.bullet, foldable: row.has_children },
-        ));
-        for line in 0..rendered.len() - 1 {
-            layout.push((row.node, cols.note, LineKind::Note { line }));
-        }
-        lines.extend(rendered);
+        rendered.extend(render_row(editor, row, is_selected).into_iter().map(|r| (row.node, r)));
     }
+    editor.scroll_offset = clamp_scroll(editor.scroll_offset, cursor_line, rendered.len(), inner_height);
 
-    let inner_height = inner.height as usize;
-    editor.viewport_height = inner_height;
-    editor.scroll_offset = clamp_scroll(editor.scroll_offset, selected_line, lines.len(), inner_height);
-
-    frame.render_widget(
-        Paragraph::new(lines).block(block).scroll((editor.scroll_offset as u16, 0)),
-        chunks[1],
-    );
-
-    let screen_lines = layout
-        .into_iter()
+    let screen_lines = rendered
+        .iter()
         .skip(editor.scroll_offset)
         .take(inner_height)
         .zip(inner.y..)
-        .map(|((node, text_x, kind), y)| ScreenLine {
+        .map(|((node, r), y)| ScreenLine {
             y,
-            node,
-            text_x: inner.x + text_x,
-            kind: match kind {
-                LineKind::Text { bullet_x, foldable } => LineKind::Text { bullet_x: inner.x + bullet_x, foldable },
+            node: *node,
+            text_x: inner.x + r.text_col,
+            chars: r.chars.clone(),
+            wrapped: r.wrapped,
+            kind: match r.kind {
+                LineKind::Text { bullet_x, foldable } => LineKind::Text {
+                    bullet_x: bullet_x.map(|b| inner.x + b),
+                    foldable,
+                },
                 note => note,
             },
         })
         .collect();
+
+    let lines: Vec<Line> = rendered.into_iter().map(|(_, r)| r.line).collect();
+    frame.render_widget(
+        Paragraph::new(lines).block(block).scroll((editor.scroll_offset as u16, 0)),
+        chunks[1],
+    );
 
     let mut search = None;
     if let Some((query, cursor)) = editor.search_input() {
@@ -188,15 +184,15 @@ fn search_line(query: &str, cursor: usize) -> Line<'static> {
 }
 
 /// Mirrors `OutlineView._scroll_selected_into_view`: nudge the viewport by
-/// the minimum needed to keep the selected line on screen.
-fn clamp_scroll(offset: usize, selected_line: usize, total_lines: usize, viewport: usize) -> usize {
+/// the minimum needed to keep the cursor's line on screen.
+fn clamp_scroll(offset: usize, cursor_line: usize, total_lines: usize, viewport: usize) -> usize {
     if viewport == 0 {
         return offset;
     }
-    let offset = if selected_line < offset {
-        selected_line
-    } else if selected_line >= offset + viewport {
-        selected_line + 1 - viewport
+    let offset = if cursor_line < offset {
+        cursor_line
+    } else if cursor_line >= offset + viewport {
+        cursor_line + 1 - viewport
     } else {
         offset
     };
@@ -244,16 +240,17 @@ fn status_text(editor: &Editor, keymap: &dyn Keymap) -> String {
     }
 }
 
-/// Port of `_render_row`. Rich styles ranges of a plain string in place;
-/// ratatui has no such object, so this builds one `(char, Style)` cell per
-/// character, layers tags -> cursor -> jump labels in the same order as the
-/// Python version, then coalesces runs of equal style into `Span`s.
-fn render_row(editor: &Editor, row: &Row, is_selected: bool) -> Vec<Line<'static>> {
+/// Port of `_render_row`, plus wrapping. Rich styles ranges of a plain
+/// string in place; ratatui has no such object, so this builds one
+/// `(char, Style)` cell per character, layers tags -> cursor -> jump labels
+/// in the same order as the Python version, splits the cells at the wrap
+/// points, then coalesces runs of equal style into `Span`s.
+fn render_row(editor: &Editor, row: &Row, is_selected: bool) -> Vec<Rendered> {
     let node = editor.outline.get(row.node);
     let insert = editor.mode() == Mode::Insert;
+    let width = editor.viewport_width;
 
     let cols = row_layout(row);
-    let prefix = " ".repeat(cols.bullet as usize);
     let bullet = if row.is_header {
         "» "
     } else if row.has_children {
@@ -282,24 +279,69 @@ fn render_row(editor: &Editor, row: &Row, is_selected: bool) -> Vec<Line<'static
         cells = overlay_labels(&node.text, &labels);
     }
 
-    let mut first = vec![Span::raw(prefix), Span::styled(bullet, bullet_style(row.has_children, is_selected))];
-    first.extend(cells_to_spans(cells));
-    let mut lines = vec![Line::from(first)];
+    let mut lines = Vec::new();
+    for (i, (chars, wrapped, piece)) in wrap_cells(&node.text, cols.text_width(width), cells).into_iter().enumerate() {
+        let mut spans = if i == 0 {
+            vec![
+                Span::raw(" ".repeat(cols.bullet as usize)),
+                Span::styled(bullet, bullet_style(row.has_children, is_selected)),
+            ]
+        } else {
+            // Continuation lines line up under the text, not the bullet.
+            vec![Span::raw(" ".repeat(cols.text as usize))]
+        };
+        spans.extend(cells_to_spans(piece));
+        lines.push(Rendered {
+            line: Line::from(spans),
+            text_col: cols.text,
+            chars,
+            wrapped,
+            kind: LineKind::Text {
+                bullet_x: (i == 0).then_some(cols.bullet),
+                foldable: row.has_children,
+            },
+        });
+    }
 
     if editor.shows_note(row.node) {
-        let note_prefix = " ".repeat(cols.note as usize);
         let note_style = Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC);
         let mut cells: Cells = node.note.chars().map(|c| (c, note_style)).collect();
         if is_selected && editor.editing_note {
             apply_cursor(&mut cells, editor.cursor, insert);
         }
-        for line_cells in cells.split(|(c, _)| *c == '\n') {
-            let mut spans = vec![Span::raw(note_prefix.clone())];
-            spans.extend(cells_to_spans(line_cells.to_vec()));
-            lines.push(Line::from(spans));
+        let note_lines = node.note.split('\n').zip(cells.split(|(c, _)| *c == '\n'));
+        for (line, (text, line_cells)) in note_lines.enumerate() {
+            for (chars, wrapped, piece) in wrap_cells(text, cols.note_width(width), line_cells.to_vec()) {
+                let mut spans = vec![Span::raw(" ".repeat(cols.note as usize))];
+                spans.extend(cells_to_spans(piece));
+                lines.push(Rendered {
+                    line: Line::from(spans),
+                    text_col: cols.note,
+                    chars,
+                    wrapped,
+                    kind: LineKind::Note { line },
+                });
+            }
         }
     }
     lines
+}
+
+/// Splits `cells` at `text`'s wrap points as (chars, wraps-onward, cells)
+/// per screen line. The last piece also keeps any cells past the end of the
+/// text: an end-of-line cursor or jump label.
+fn wrap_cells(text: &str, width: usize, cells: Cells) -> Vec<(Range<usize>, bool, Cells)> {
+    let ranges = wrap(text, width);
+    let last = ranges.len() - 1;
+    ranges
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let end = if i == last { cells.len() } else { r.end };
+            let piece = cells[r.start..end].to_vec();
+            (r, i < last, piece)
+        })
+        .collect()
 }
 
 fn bullet_style(has_children: bool, selected: bool) -> Style {
@@ -491,6 +533,49 @@ mod tests {
         ed.apply(Action::Search(SearchOp::Cancel));
         let lines = screen(&mut ed, None);
         assert!(!lines.iter().any(|l| l.contains("Search…") || l.contains("alp ")), "{lines:#?}");
+    }
+
+    // The screen is 60 wide: 58 inside the border, so item text (from column
+    // 2) wraps at 55 and note text (from column 4) at 53, leaving the last
+    // column free for an end-of-line cursor.
+    fn fourteen_words() -> String {
+        ["word"; 14].join(" ")
+    }
+
+    #[test]
+    fn long_items_wrap_with_continuation_lines_under_the_text() {
+        let long = fourteen_words();
+        let mut ed = editor_with(&[&long, "next"], EditingStyle::Modal);
+        ed.cursor = 0;
+        let lines = screen(&mut ed, None);
+        assert_eq!(lines[2].matches("word").count(), 11, "{lines:#?}");
+        assert!(lines[2].starts_with("│• word"), "{lines:#?}");
+        assert!(lines[3].starts_with("│  word word word "), "{lines:#?}");
+        assert!(lines[4].contains("• next"), "{lines:#?}");
+    }
+
+    #[test]
+    fn long_notes_wrap_under_the_note() {
+        let mut ed = editor_with(&["alpha", "next"], EditingStyle::Modal);
+        let a = ed.selected;
+        ed.outline.get_mut(a).note = fourteen_words();
+        let lines = screen(&mut ed, None);
+        assert_eq!(lines[3].matches("word").count(), 10, "{lines:#?}");
+        assert!(lines[4].starts_with("│    word word word word "), "{lines:#?}");
+        assert!(lines[5].contains("• next"), "{lines:#?}");
+    }
+
+    #[test]
+    fn the_view_scrolls_to_keep_the_cursors_wrapped_line_visible() {
+        let long = fourteen_words();
+        // Six outline lines fit; the long item's second line would be the seventh.
+        let mut ed = editor_with(&["a", "b", "c", "d", "e", &long], EditingStyle::Modal);
+        for _ in 0..5 {
+            ed.apply(Action::MoveDown);
+        }
+        ed.apply(Action::LineEnd);
+        let lines = screen(&mut ed, None);
+        assert_eq!(ed.scroll_offset, 1, "{lines:#?}");
     }
 
     #[test]

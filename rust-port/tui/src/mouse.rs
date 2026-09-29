@@ -56,10 +56,18 @@ impl Mouse {
         };
         let node = line.node;
         let column = x.saturating_sub(line.text_x);
+        // The character under the click within this screen line's slice of
+        // `text`. Past the end of a wrapped line means the last character
+        // on it, not the first one of the next line.
+        let char_at = |text: &str| {
+            let piece: String = text.chars().skip(line.chars.start).take(line.chars.len()).collect();
+            let last = if line.wrapped { line.chars.end - 1 } else { line.chars.end };
+            (line.chars.start + column_to_char(&piece, column)).min(last)
+        };
         match line.kind {
-            // Left of the text: the bullet (folds, if there's anything to
-            // fold) or the indentation before it (just selects).
-            LineKind::Text { bullet_x, foldable } if x < line.text_x => {
+            // Left of the text on an item's first line: the bullet (folds,
+            // if there's anything to fold) or the indentation before it.
+            LineKind::Text { bullet_x: Some(bullet_x), foldable } if x < line.text_x => {
                 let mut actions = vec![Action::PlaceCursor { node, cursor: 0, note: false }];
                 if foldable && x >= bullet_x {
                     actions.push(Action::Fold(FoldOp::Toggle));
@@ -67,7 +75,7 @@ impl Mouse {
                 actions
             }
             LineKind::Text { .. } => {
-                let cursor = column_to_char(&editor.outline.get(node).text, column);
+                let cursor = char_at(&editor.outline.get(node).text);
                 let place = Action::PlaceCursor { node, cursor, note: false };
                 match last {
                     Some((at, prev)) if prev == node && now.duration_since(at) <= DOUBLE_CLICK => {
@@ -82,7 +90,7 @@ impl Mouse {
             LineKind::Note { line: n } => {
                 let mut note_lines = editor.outline.get(node).note.split('\n');
                 let before: usize = note_lines.by_ref().take(n).map(|l| l.chars().count() + 1).sum();
-                let cursor = before + column_to_char(note_lines.next().unwrap_or(""), column);
+                let cursor = before + char_at(note_lines.next().unwrap_or(""));
                 vec![Action::PlaceCursor { node, cursor, note: true }]
             }
         }
@@ -191,6 +199,27 @@ mod tests {
         assert_eq!(ed.cursor, 3);
         click(&mut ed, 3 + 3, 2); // right half of 本
         assert_eq!(ed.cursor, 1);
+    }
+
+    #[test]
+    fn clicks_on_a_wrapped_item_map_to_the_right_characters() {
+        // At this width item text wraps at 55: the first screen line holds
+        // characters 0..55, the second (y=3) 55..69.
+        let long = ["word"; 14].join(" ");
+        let (mut ed, ids) = editor_with(&[&long, "next"], EditingStyle::Traditional);
+
+        click(&mut ed, 3 + 5, 3);
+        assert_eq!((ed.selected, ed.cursor), (ids[0], 55 + 5), "on the continuation line");
+        click(&mut ed, 58, 2);
+        assert_eq!(ed.cursor, 54, "past the end of a wrapped line stays on that line");
+        click(&mut ed, 40, 3);
+        assert_eq!(ed.cursor, 69, "past the end of the last line is the end of the text");
+        click(&mut ed, 1, 3);
+        assert_eq!(ed.cursor, 55, "continuation lines have no bullet; left of the text is its start");
+        assert!(!ed.outline.get(ids[0]).collapsed);
+
+        click(&mut ed, 3, 4);
+        assert_eq!(ed.selected, ids[1], "the next item is pushed down a line");
     }
 
     #[test]
