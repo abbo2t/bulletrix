@@ -45,6 +45,9 @@ pub enum Action {
     Search(SearchOp),
 
     ToggleHideCompleted,
+    /// Queues the selected item's text in `Editor::pending_copy` for the
+    /// caller to send to the clipboard.
+    CopyLine,
     /// Performed by the caller (the editor does no I/O).
     Save,
     Quit,

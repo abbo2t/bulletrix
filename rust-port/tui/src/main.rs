@@ -4,10 +4,11 @@
 //! The outline defaults to `~/.bulletrix/outline.json` (same file and format
 //! as the Python version) and the style to `editing_style` in
 //! `~/.bulletrix/config.toml`. `--import` merges an OPML file into the
-//! outline and exits. Not yet ported: clipboard copy.
+//! outline and exits.
 
 mod action;
 mod autosave;
+mod clipboard;
 mod config;
 mod editor;
 mod keymap;
@@ -108,11 +109,17 @@ fn run(
         }
         let action = keymap::dispatch(editor, keymap, key);
         let force = action == Some(Action::Save);
-        let notice = editor.notice.take();
+        let mut notice = editor.notice.take().map(String::from);
+        if let Some(text) = editor.pending_copy.take() {
+            notice = Some(match clipboard::copy(terminal.backend_mut(), &text) {
+                Ok(()) => "copied".into(),
+                Err(e) => format!("copy failed: {e}"),
+            });
+        }
         note = match autosave.sync(editor, force) {
             Err(e) => Some(format!("save failed: {e}")),
             Ok(_) if force => Some("saved".into()),
-            Ok(_) => notice.map(String::from),
+            Ok(_) => notice,
         };
     }
     Ok(())

@@ -120,12 +120,15 @@ impl Keymap for TraditionalKeymap {
         if is_ctrl(key, 'y') {
             return Some(Action::Redo);
         }
+        if is_ctrl(key, 'c') {
+            return Some(Action::CopyLine);
+        }
         shared(key).or_else(|| insert_layer(key))
     }
 
     fn help(&self, _mode: Mode) -> &'static str {
         "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^F:search  ^D:done  ^K:fold  \
-         ^O:note  ^N:child  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
+         ^O:note  ^N:child  ^C:copy  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
     }
 }
 
@@ -154,7 +157,7 @@ impl Keymap for ModalKeymap {
     fn help(&self, mode: Mode) -> &'static str {
         match mode {
             Mode::Normal => {
-                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  s:jump  /:search  \
+                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy:copy  hjkl:move  s:jump  /:search  \
                  Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  \
                  Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  ^S:save  q:quit"
             }
@@ -175,6 +178,7 @@ impl ModalKeymap {
                 ('d', 'd') => Some(Action::DeleteNode),
                 ('c', 'c') => Some(Action::ChangeLine),
                 ('g', 'g') => Some(Action::JumpToFirst),
+                ('y', 'y') => Some(Action::CopyLine),
                 ('z', 'o') => Some(Action::Fold(FoldOp::Open)),
                 ('z', 'c') => Some(Action::Fold(FoldOp::Close)),
                 ('z', 'a') => Some(Action::Fold(FoldOp::Toggle)),
@@ -186,7 +190,7 @@ impl ModalKeymap {
             return Some(Action::ZoomIn);
         }
         let action = match ch? {
-            c @ ('d' | 'c' | 'g' | 'z') => {
+            c @ ('d' | 'c' | 'g' | 'y' | 'z') => {
                 self.pending = Some(c);
                 return None;
             }
@@ -452,6 +456,35 @@ mod tests {
         assert!(!h.ed.editing_note);
         assert_eq!(h.ed.mode(), Mode::Normal);
         assert_eq!(h.ed.outline.get(h.a).note, "note");
+    }
+
+    // -- copy -----------------------------------------------------------------
+
+    #[test]
+    fn yy_copies_current_task_text_without_changing_it() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("jyy");
+        assert_eq!(h.ed.pending_copy.as_deref(), Some("bravo"));
+        assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn y_then_another_key_copies_nothing() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("yj");
+        assert_eq!(h.ed.pending_copy, None);
+        assert_eq!(h.ed.selected, h.a, "the j is swallowed, like dj");
+    }
+
+    #[test]
+    fn traditional_ctrl_c_copies_and_modal_ctrl_c_does_not() {
+        let mut h = harness(EditingStyle::Traditional);
+        h.ctrl('c');
+        assert_eq!(h.ed.pending_copy.as_deref(), Some("alpha"));
+
+        let mut h = harness(EditingStyle::Modal);
+        h.ctrl('c');
+        assert_eq!(h.ed.pending_copy, None);
     }
 
     // -- jump -----------------------------------------------------------------

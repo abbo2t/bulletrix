@@ -62,6 +62,8 @@ pub struct Editor {
     pub should_quit: bool,
     /// One-shot message for the status bar (e.g. "no matches"); the caller takes it.
     pub notice: Option<&'static str>,
+    /// Text to put on the clipboard; the caller takes it and does the I/O.
+    pub pending_copy: Option<String>,
     mode: Mode,
     style: EditingStyle,
     jump: Jump,
@@ -102,6 +104,7 @@ impl Editor {
             viewport_height: 0,
             should_quit: false,
             notice: None,
+            pending_copy: None,
             mode: match style {
                 EditingStyle::Modal => Mode::Normal,
                 EditingStyle::Traditional => Mode::Insert,
@@ -284,6 +287,7 @@ impl Editor {
                 self.enter_insert(None);
             }
             Action::DeleteNode => self.delete_node(row),
+            Action::CopyLine => self.pending_copy = Some(self.outline.get(node).text.clone()),
 
             Action::EnterInsert(at) => {
                 let len = self.buffer_len(node);
