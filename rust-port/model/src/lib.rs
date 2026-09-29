@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use slotmap::{new_key_type, SlotMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod opml;
 pub mod storage;
 
 new_key_type! { pub struct NodeId; }

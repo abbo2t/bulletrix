@@ -1,9 +1,10 @@
 //! Ratatui port of bulletrix.
 //!
-//! `bulletrix [--file PATH] [--style modal|traditional]`. The outline
-//! defaults to `~/.bulletrix/outline.json` (same file and format as the
-//! Python version) and the style to `editing_style` in
-//! `~/.bulletrix/config.toml`. Not yet ported: OPML import, clipboard copy.
+//! `bulletrix [--file PATH] [--style modal|traditional] [--import OPML_FILE]`.
+//! The outline defaults to `~/.bulletrix/outline.json` (same file and format
+//! as the Python version) and the style to `editing_style` in
+//! `~/.bulletrix/config.toml`. `--import` merges an OPML file into the
+//! outline and exits. Not yet ported: clipboard copy.
 
 mod action;
 mod autosave;
@@ -20,10 +21,11 @@ use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use editor::Editor;
 use keymap::Keymap;
-use model::storage;
+use model::{opml, storage, Outline};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, Stdout};
+use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -43,6 +45,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(opml_path) = &opts.import {
+        return run_import(outline, opml_path, &opts.file);
+    }
 
     let mut editor = Editor::new(outline, opts.style);
     let mut keymap = keymap::for_style(opts.style);
@@ -64,6 +69,26 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// `--import`: merge an OPML file into the outline file and exit.
+fn run_import(mut outline: Outline, opml_path: &Path, file: &Path) -> ExitCode {
+    let result = opml::import_opml(&mut outline, opml_path)
+        .and_then(|added| storage::save(file, &outline.to_json_string()).map(|()| added));
+    match result {
+        Ok(added) => {
+            println!(
+                "Imported {added} top-level item(s) from {} into {}",
+                opml_path.display(),
+                file.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Import failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run(

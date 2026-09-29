@@ -35,6 +35,8 @@ struct ConfigFile {
 pub struct Options {
     pub style: EditingStyle,
     pub file: PathBuf,
+    /// Merge this OPML file into `file` and exit instead of starting the TUI.
+    pub import: Option<PathBuf>,
 }
 
 /// `~/.bulletrix`, where both the outline and the config file live.
@@ -42,13 +44,15 @@ pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".bulletrix"))
 }
 
-/// Parses `--style modal|traditional` and `--file PATH` (either as
-/// `--flag value` or `--flag=value`). `--style` overrides the config file's
-/// `editing_style`; `--file` defaults to `outline.json` in `data_dir`.
+/// Parses `--style modal|traditional`, `--file PATH` and `--import OPML_FILE`
+/// (each as `--flag value` or `--flag=value`). `--style` overrides the
+/// config file's `editing_style`; `--file` defaults to `outline.json` in
+/// `data_dir`.
 pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) -> Result<Options, String> {
     let mut args = args.into_iter();
     let mut style_flag = None;
     let mut file_flag = None;
+    let mut import_flag = None;
     while let Some(arg) = args.next() {
         let (name, inline_value) = match arg.split_once('=') {
             Some((name, value)) => (name.to_string(), Some(value.to_string())),
@@ -57,6 +61,7 @@ pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) 
         let slot = match name.as_str() {
             "--style" => &mut style_flag,
             "--file" => &mut file_flag,
+            "--import" => &mut import_flag,
             _ => return Err(format!("unrecognized argument {arg:?}")),
         };
         let value = match inline_value {
@@ -75,7 +80,11 @@ pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) 
         (None, Some(dir)) => dir.join("outline.json"),
         (None, None) => return Err("$HOME is not set; pass --file PATH".into()),
     };
-    Ok(Options { style, file })
+    Ok(Options {
+        style,
+        file,
+        import: import_flag.map(PathBuf::from),
+    })
 }
 
 fn style_from_config(config_path: Option<&Path>) -> Result<EditingStyle, String> {
@@ -128,9 +137,19 @@ mod tests {
     fn flags_override_defaults_in_both_spellings() {
         let dir = data_dir_with("override", Some("editing_style = \"traditional\"\n"));
         let opts = resolve(args(&["--style", "modal", "--file=/tmp/x.json"]), Some(&dir)).unwrap();
-        assert_eq!(opts, Options { style: EditingStyle::Modal, file: PathBuf::from("/tmp/x.json") });
-        let opts = resolve(args(&["--style=modal", "--file", "y.json"]), Some(&dir)).unwrap();
-        assert_eq!(opts, Options { style: EditingStyle::Modal, file: PathBuf::from("y.json") });
+        assert_eq!(
+            opts,
+            Options { style: EditingStyle::Modal, file: PathBuf::from("/tmp/x.json"), import: None }
+        );
+        let opts = resolve(args(&["--style=modal", "--file", "y.json", "--import", "in.opml"]), Some(&dir)).unwrap();
+        assert_eq!(
+            opts,
+            Options {
+                style: EditingStyle::Modal,
+                file: PathBuf::from("y.json"),
+                import: Some(PathBuf::from("in.opml")),
+            }
+        );
     }
 
     #[test]
