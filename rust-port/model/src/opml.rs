@@ -30,6 +30,7 @@ pub fn import_opml_str(outline: &mut Outline, xml: &str) -> Result<usize, roxmlt
     let Some(body) = child_elements(doc.root_element(), "body").next() else {
         return Ok(0);
     };
+    let placeholder = untouched_placeholder(outline);
     let root = outline.root();
     let mut added = 0;
     for elem in child_elements(body, "outline") {
@@ -37,7 +38,27 @@ pub fn import_opml_str(outline: &mut Outline, xml: &str) -> Result<usize, roxmlt
         outline.append_child(root, node);
         added += 1;
     }
+    // Replace a fresh outline's blank starter item rather than leaving an
+    // empty row above the import (the Python version kept it).
+    if let (Some(p), true) = (placeholder, added > 0) {
+        outline.delete(p);
+        if outline.selected_id == Some(p) {
+            outline.selected_id = None;
+        }
+    }
     Ok(added)
+}
+
+/// The blank item a new outline starts with, if it's still the only
+/// top-level item and hasn't been used in any way.
+fn untouched_placeholder(outline: &Outline) -> Option<NodeId> {
+    let root = outline.get(outline.root());
+    let [only] = root.children[..] else {
+        return None;
+    };
+    let n = outline.get(only);
+    let untouched = n.text.is_empty() && n.note.is_empty() && n.children.is_empty() && !n.completed;
+    (untouched && !outline.breadcrumb().contains(&only)).then_some(only)
 }
 
 fn child_elements<'a, 'input>(
@@ -140,6 +161,51 @@ mod tests {
         assert_eq!(outline.get(groceries).parent, Some(outline.root()));
         let milk = outline.get(groceries).children[0];
         assert_eq!(outline.get(milk).parent, Some(groceries));
+    }
+
+    #[test]
+    fn importing_into_a_fresh_outline_replaces_the_blank_starter_item() {
+        let mut outline = Outline::new();
+        let placeholder = top_level(&outline)[0];
+        outline.selected_id = Some(placeholder);
+
+        assert_eq!(import_opml_str(&mut outline, SAMPLE_OPML), Ok(2));
+        assert_eq!(texts(&outline, &top_level(&outline)), ["Groceries", "Work"]);
+        assert_eq!(outline.selected_id, None, "must not point at the deleted item");
+        Outline::from_json_str(&outline.to_json_string()).unwrap();
+    }
+
+    #[test]
+    fn a_blank_item_that_has_been_used_is_kept() {
+        let used: [fn(&mut Outline, NodeId); 3] = [
+            |o, id| o.get_mut(id).note = "a note".into(),
+            |o, id| o.get_mut(id).completed = true,
+            |o, id| o.zoom_in(id),
+        ];
+        for mark_used in used {
+            let mut outline = Outline::new();
+            let blank = top_level(&outline)[0];
+            mark_used(&mut outline, blank);
+            import_opml_str(&mut outline, SAMPLE_OPML).unwrap();
+            assert_eq!(top_level(&outline)[0], blank);
+        }
+    }
+
+    #[test]
+    fn a_blank_item_alongside_other_items_is_kept() {
+        let mut outline = existing_outline();
+        let blank = outline.create_node("");
+        outline.append_child(outline.root(), blank);
+        import_opml_str(&mut outline, SAMPLE_OPML).unwrap();
+        assert_eq!(texts(&outline, &top_level(&outline)), ["existing item", "", "Groceries", "Work"]);
+    }
+
+    #[test]
+    fn an_import_that_adds_nothing_keeps_the_blank_starter_item() {
+        let mut outline = Outline::new();
+        let xml = "<opml><body/></opml>";
+        assert_eq!(import_opml_str(&mut outline, xml), Ok(0));
+        assert_eq!(top_level(&outline).len(), 1);
     }
 
     #[test]
