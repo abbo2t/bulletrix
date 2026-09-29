@@ -296,6 +296,36 @@ impl Outline {
         }
     }
 
+    /// A detached copy of `id` and all its descendants.
+    pub fn copy_subtree(&self, id: NodeId) -> Subtree {
+        Subtree(self.node_to_dto(id))
+    }
+
+    /// Inserts a copy of `subtree` (unattached, like `create_node`) and
+    /// returns its root. Every node gets a fresh uuid, so inserting the same
+    /// subtree twice never produces duplicate ids; everything else,
+    /// timestamps included, is kept.
+    pub fn insert_subtree(&mut self, subtree: &Subtree) -> NodeId {
+        self.insert_dto_copy(&subtree.0)
+    }
+
+    fn insert_dto_copy(&mut self, dto: &NodeDto) -> NodeId {
+        let id = self.arena.insert(Node {
+            text: dto.text.clone(),
+            note: dto.note.clone(),
+            completed: dto.completed,
+            collapsed: dto.collapsed,
+            created: dto.created,
+            modified: dto.modified,
+            ..Node::new()
+        });
+        for child in &dto.children {
+            let child_id = self.insert_dto_copy(child);
+            self.append_child(id, child_id);
+        }
+        id
+    }
+
     /// Joins the next sibling's text and children onto `id` (forward-delete
     /// at end of line). Returns false if there is no next sibling.
     pub fn merge_forward(&mut self, id: NodeId) -> bool {
@@ -570,8 +600,13 @@ impl Default for Outline {
 // Nested tree-shaped DTO for JSON - the arena is flat and id-based, but
 // the on-disk format (and Python's json.dumps(outline.to_dict())) is a
 // nested tree, so this is the translation boundary between the two shapes.
+/// An item and its descendants, detached from any outline (see
+/// `Outline::copy_subtree`).
+#[derive(Clone)]
+pub struct Subtree(NodeDto);
+
 // Missing fields get the same defaults as Python's `Node.from_dict`.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct NodeDto {
     #[serde(default)]
     id: String,
@@ -808,6 +843,34 @@ mod tests {
         assert_eq!(outline.get(grandchild).parent, Some(a));
         assert_eq!(outline.get(root).children, vec![a, c]);
         assert!(!outline.merge_forward(c));
+    }
+
+    #[test]
+    fn copied_subtree_inserts_as_a_deep_copy_with_fresh_ids() {
+        let (mut outline, _a, b, _c, _root) = make_outline();
+        let kid = outline.create_node("kid");
+        outline.append_child(b, kid);
+        let grandkid = outline.create_node("grandkid");
+        outline.append_child(kid, grandkid);
+        outline.arena[kid].note = "note".into();
+        outline.arena[kid].completed = true;
+        outline.arena[kid].collapsed = true;
+
+        let copy = outline.copy_subtree(b);
+        outline.delete(b);
+        let first = outline.insert_subtree(&copy);
+        let second = outline.insert_subtree(&copy);
+
+        for pasted in [first, second] {
+            assert_eq!(outline.get(pasted).text, "B");
+            assert_eq!(outline.get(pasted).parent, None, "unattached until placed");
+            let k = outline.get(pasted).children[0];
+            assert_eq!(outline.get(k).parent, Some(pasted));
+            assert_eq!((outline.get(k).note.as_str(), outline.get(k).completed, outline.get(k).collapsed), ("note", true, true));
+            assert_eq!(outline.get(outline.get(k).children[0]).text, "grandkid");
+        }
+        let uuids: std::collections::HashSet<&str> = outline.arena.values().map(|n| n.uuid.as_str()).collect();
+        assert_eq!(uuids.len(), outline.arena.len(), "every node has a distinct uuid");
     }
 
     #[test]

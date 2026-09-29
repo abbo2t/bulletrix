@@ -6,7 +6,7 @@
 use crate::action::{Action, FoldOp, InsertAt, SearchOp};
 use crate::config::EditingStyle;
 use crate::undo::UndoStack;
-use model::{NodeId, Outline, Row};
+use model::{NodeId, Outline, Row, Subtree};
 
 // Home-row-first order, like flash.nvim/easymotion default label pools.
 pub const JUMP_LABELS: &str = "fjdkslaghrueiwoqpcmxzntyvb";
@@ -47,6 +47,15 @@ struct Snapshot {
     editing_note: bool,
 }
 
+#[derive(Clone)]
+enum Register {
+    /// From copying: pastes as a new item with just this text.
+    Text(String),
+    /// From deleting: pastes the whole item back, children and all, so
+    /// delete-then-paste moves it.
+    Subtree(Subtree),
+}
+
 /// Consecutive typing into the same buffer (node, is-note) is one undo step.
 type EditGroup = (NodeId, bool);
 
@@ -67,7 +76,7 @@ pub struct Editor {
     /// What the paste actions insert; filled by `CopyLine` and `DeleteNode`.
     /// Internal rather than read back from the system clipboard, which
     /// terminals generally don't allow.
-    register: Option<String>,
+    register: Option<Register>,
     mode: Mode,
     style: EditingStyle,
     jump: Jump,
@@ -294,7 +303,7 @@ impl Editor {
             Action::DeleteNode => self.delete_node(row),
             Action::CopyLine => {
                 let text = self.outline.get(node).text.clone();
-                self.register = Some(text.clone());
+                self.register = Some(Register::Text(text.clone()));
                 self.pending_copy = Some(text);
             }
             Action::PasteBelow => self.paste(row, false),
@@ -497,16 +506,19 @@ impl Editor {
         self.focus_new_node(new);
     }
 
-    /// A new sibling next to `row` with the register's text (text only: no
-    /// note, done state, or children). Like `o`/`O`, a header row gets a
-    /// first child instead, so the paste stays inside the zoomed view.
+    /// Places the register's contents as a sibling next to `row`. Like
+    /// `o`/`O`, a header row gets a first child instead, so the paste stays
+    /// inside the zoomed view.
     fn paste(&mut self, row: Row, above: bool) {
-        let Some(text) = self.register.clone() else {
+        let Some(register) = self.register.clone() else {
             self.notice = Some("nothing to paste");
             return;
         };
         self.checkpoint(None);
-        let new = self.outline.create_node(text);
+        let new = match &register {
+            Register::Text(text) => self.outline.create_node(text.as_str()),
+            Register::Subtree(subtree) => self.outline.insert_subtree(subtree),
+        };
         if row.is_header {
             self.outline.add_first_child(row.node, new);
         } else if above {
@@ -547,9 +559,9 @@ impl Editor {
         if parent == self.outline.root() && self.outline.get(parent).children.len() == 1 {
             return; // keep at least one top-level item
         }
-        // Like vim's dd: the deleted text can be put back elsewhere with p.
+        // Like vim's dd: the deleted item can be put back elsewhere with p.
         // Register only - deleting doesn't overwrite the system clipboard.
-        self.register = Some(self.outline.get(node).text.clone());
+        self.register = Some(Register::Subtree(self.outline.copy_subtree(node)));
         self.checkpoint(None);
         let idx = self
             .outline

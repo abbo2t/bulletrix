@@ -566,6 +566,57 @@ mod tests {
     }
 
     #[test]
+    fn dd_then_p_moves_the_whole_subtree() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.ed.outline.get_mut(kid).note = "kid note".into();
+        h.ed.outline.get_mut(kid).completed = true;
+        h.typ("jddp");
+
+        assert_eq!(h.top_level(), ["alpha", "charlie", "bravo"]);
+        let moved = h.ed.selected;
+        let moved_kid = h.ed.outline.get(moved).children[0];
+        let k = h.ed.outline.get(moved_kid);
+        assert_eq!((k.text.as_str(), k.note.as_str(), k.completed), ("kid", "kid note", true));
+        assert_eq!(k.parent, Some(moved));
+    }
+
+    #[test]
+    fn a_dd_subtree_can_be_pasted_twice_and_still_saves_and_reloads() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.typ("jddpp");
+        assert_eq!(h.top_level(), ["alpha", "charlie", "bravo", "bravo"]);
+
+        let reloaded = Outline::from_json_str(&h.ed.persisted_json()).unwrap();
+        let selected = reloaded.selected_id.expect("selection resolves by a unique uuid");
+        assert_eq!(reloaded.get(selected).text, "bravo");
+        assert_eq!(reloaded.get(reloaded.get(selected).children[0]).text, "kid");
+    }
+
+    #[test]
+    fn yy_after_dd_goes_back_to_pasting_text_only() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.typ("jdd"); // deletes bravo (with kid); charlie is selected
+        h.typ("yyp");
+        assert_eq!(h.top_level(), ["alpha", "charlie", "charlie"]);
+        assert!(h.ed.outline.get(h.ed.selected).children.is_empty());
+    }
+
+    #[test]
+    fn undoing_a_subtree_paste_removes_it_whole() {
+        let mut h = harness(EditingStyle::Modal);
+        let kid = h.ed.outline.create_node("kid");
+        h.ed.outline.append_child(h.b, kid);
+        h.typ("jddpu");
+        assert_eq!(h.top_level(), ["alpha", "charlie"]);
+    }
+
+    #[test]
     fn a_refused_dd_copies_nothing() {
         let mut ed = Editor::new(Outline::new(), EditingStyle::Modal);
         let mut km = for_style(EditingStyle::Modal);
