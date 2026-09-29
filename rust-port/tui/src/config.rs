@@ -25,10 +25,20 @@ impl FromStr for EditingStyle {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
     editing_style: EditingStyle,
+    mouse: bool,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        ConfigFile {
+            editing_style: EditingStyle::default(),
+            mouse: true,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -37,6 +47,9 @@ pub struct Options {
     pub file: PathBuf,
     /// Merge this OPML file into `file` and exit instead of starting the TUI.
     pub import: Option<PathBuf>,
+    /// Capture the mouse. Off leaves clicks and drags to the terminal (e.g.
+    /// for its own text selection).
+    pub mouse: bool,
 }
 
 /// `~/.bulletrix`, where both the outline and the config file live.
@@ -47,7 +60,7 @@ pub fn data_dir() -> Option<PathBuf> {
 /// Parses `--style modal|traditional`, `--file PATH` and `--import OPML_FILE`
 /// (each as `--flag value` or `--flag=value`). `--style` overrides the
 /// config file's `editing_style`; `--file` defaults to `outline.json` in
-/// `data_dir`.
+/// `data_dir`; `mouse` comes only from the config file.
 pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) -> Result<Options, String> {
     let mut args = args.into_iter();
     let mut style_flag = None;
@@ -71,9 +84,10 @@ pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) 
         *slot = Some(value);
     }
 
+    let config = read_config(data_dir.map(|d| d.join("config.toml")).as_deref())?;
     let style = match style_flag {
         Some(value) => value.parse()?,
-        None => style_from_config(data_dir.map(|d| d.join("config.toml")).as_deref())?,
+        None => config.editing_style,
     };
     let file = match (file_flag, data_dir) {
         (Some(f), _) => PathBuf::from(f),
@@ -84,18 +98,17 @@ pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) 
         style,
         file,
         import: import_flag.map(PathBuf::from),
+        mouse: config.mouse,
     })
 }
 
-fn style_from_config(config_path: Option<&Path>) -> Result<EditingStyle, String> {
+fn read_config(config_path: Option<&Path>) -> Result<ConfigFile, String> {
     let Some(path) = config_path else {
-        return Ok(EditingStyle::default());
+        return Ok(ConfigFile::default());
     };
     match std::fs::read_to_string(path) {
-        Ok(contents) => toml::from_str::<ConfigFile>(&contents)
-            .map(|c| c.editing_style)
-            .map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(EditingStyle::default()),
+        Ok(contents) => toml::from_str(&contents).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(ConfigFile::default()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
@@ -125,12 +138,15 @@ mod tests {
         let opts = resolve(args(&[]), Some(&dir)).unwrap();
         assert_eq!(opts.style, EditingStyle::Modal);
         assert_eq!(opts.file, dir.join("outline.json"));
+        assert!(opts.mouse);
     }
 
     #[test]
-    fn reads_style_from_config_file() {
-        let dir = data_dir_with("file", Some("editing_style = \"traditional\"\n"));
-        assert_eq!(resolve(args(&[]), Some(&dir)).unwrap().style, EditingStyle::Traditional);
+    fn reads_style_and_mouse_from_config_file() {
+        let dir = data_dir_with("file", Some("editing_style = \"traditional\"\nmouse = false\n"));
+        let opts = resolve(args(&[]), Some(&dir)).unwrap();
+        assert_eq!(opts.style, EditingStyle::Traditional);
+        assert!(!opts.mouse);
     }
 
     #[test]
@@ -139,7 +155,7 @@ mod tests {
         let opts = resolve(args(&["--style", "modal", "--file=/tmp/x.json"]), Some(&dir)).unwrap();
         assert_eq!(
             opts,
-            Options { style: EditingStyle::Modal, file: PathBuf::from("/tmp/x.json"), import: None }
+            Options { style: EditingStyle::Modal, file: PathBuf::from("/tmp/x.json"), import: None, mouse: true }
         );
         let opts = resolve(args(&["--style=modal", "--file", "y.json", "--import", "in.opml"]), Some(&dir)).unwrap();
         assert_eq!(
@@ -148,6 +164,7 @@ mod tests {
                 style: EditingStyle::Modal,
                 file: PathBuf::from("y.json"),
                 import: Some(PathBuf::from("in.opml")),
+                mouse: true,
             }
         );
     }

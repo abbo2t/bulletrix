@@ -4,7 +4,8 @@
 //! The outline defaults to `~/.bulletrix/outline.json` (same file and format
 //! as the Python version) and the style to `editing_style` in
 //! `~/.bulletrix/config.toml`. `--import` merges an OPML file into the
-//! outline and exits.
+//! outline and exits. `mouse = false` in the config file leaves the mouse
+//! to the terminal.
 
 mod action;
 mod autosave;
@@ -12,6 +13,7 @@ mod clipboard;
 mod config;
 mod editor;
 mod keymap;
+mod mouse;
 mod ui;
 mod undo;
 
@@ -55,7 +57,7 @@ fn main() -> ExitCode {
     let mut autosave = Autosave::new(opts.file, &mut editor);
 
     install_panic_hook();
-    let result = init_terminal().and_then(|mut terminal| {
+    let result = init_terminal(opts.mouse).and_then(|mut terminal| {
         let result = run(&mut terminal, &mut editor, keymap.as_mut(), &mut autosave);
         restore_terminal(&mut terminal)?;
         result
@@ -99,38 +101,72 @@ fn run(
     autosave: &mut Autosave,
 ) -> io::Result<()> {
     let mut note: Option<String> = None;
+    let mut screen = ui::ScreenMap::default();
+    let mut redraw = true;
     while !editor.should_quit {
-        terminal.draw(|frame| ui::draw(frame, editor, keymap, note.as_deref()))?;
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
+        if redraw {
+            terminal.draw(|frame| screen = ui::draw(frame, editor, keymap, note.as_deref()))?;
         }
-        let action = keymap::dispatch(editor, keymap, key);
-        let force = action == Some(Action::Save);
-        let mut notice = editor.notice.take().map(String::from);
-        if let Some(text) = editor.pending_copy.take() {
-            notice = Some(match clipboard::copy(terminal.backend_mut(), &text) {
-                Ok(()) => "copied".into(),
-                Err(e) => format!("copy failed: {e}"),
-            });
-        }
-        note = match autosave.sync(editor, force) {
-            Err(e) => Some(format!("save failed: {e}")),
-            Ok(_) if force => Some("saved".into()),
-            Ok(_) => notice,
+        // Only redraw when an event did something: with the mouse captured,
+        // every movement is an event.
+        redraw = true;
+        let force_save = match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                keymap::dispatch(editor, keymap, key) == Some(Action::Save)
+            }
+            Event::Mouse(ev) => {
+                let actions = mouse::resolve(ev, &screen, editor);
+                if actions.is_empty() {
+                    redraw = false;
+                    continue;
+                }
+                for action in actions {
+                    editor.apply(action);
+                }
+                false
+            }
+            Event::Resize(..) => continue,
+            _ => {
+                redraw = false;
+                continue;
+            }
         };
+        note = settle(terminal, editor, autosave, force_save);
     }
     Ok(())
 }
 
+/// Does the I/O the last actions asked for (clipboard, saving) and returns
+/// the status-bar message, if any.
+fn settle(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    editor: &mut Editor,
+    autosave: &mut Autosave,
+    force_save: bool,
+) -> Option<String> {
+    let mut notice = editor.notice.take().map(String::from);
+    if let Some(text) = editor.pending_copy.take() {
+        notice = Some(match clipboard::copy(terminal.backend_mut(), &text) {
+            Ok(()) => "copied".into(),
+            Err(e) => format!("copy failed: {e}"),
+        });
+    }
+    match autosave.sync(editor, force_save) {
+        Err(e) => Some(format!("save failed: {e}")),
+        Ok(_) if force_save => Some("saved".into()),
+        Ok(_) => notice,
+    }
+}
+
 // -- terminal lifecycle --------------------------------------------------
 
-fn init_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
+fn init_terminal(mouse: bool) -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
+    if mouse {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     Terminal::new(CrosstermBackend::new(stdout))
 }
 

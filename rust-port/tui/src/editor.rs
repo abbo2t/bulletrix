@@ -186,6 +186,8 @@ impl Editor {
             Action::JumpInput(ch) => self.jump_input(ch),
             Action::OpenSearch => self.search = Some(SearchInput::default()),
             Action::Search(op) => self.search_op(op),
+            Action::PlaceCursor { node, cursor, note } => self.place_cursor(node, cursor, note),
+            Action::Scroll(lines) => self.scroll(lines),
             Action::JumpToFirst => self.jump_to_index(0),
             Action::JumpToLast => self.jump_to_index(usize::MAX),
             _ => {
@@ -343,6 +345,8 @@ impl Editor {
             | Action::JumpInput(_)
             | Action::OpenSearch
             | Action::Search(_)
+            | Action::PlaceCursor { .. }
+            | Action::Scroll(_)
             | Action::JumpToFirst
             | Action::JumpToLast
             | Action::ToggleHideCompleted
@@ -455,6 +459,52 @@ impl Editor {
         self.selected = rows[new_idx].node;
         let len = self.buffer_len(self.selected);
         self.cursor = if cursor_at_end { len } else { self.cursor.min(len) };
+    }
+
+    fn place_cursor(&mut self, node: NodeId, cursor: usize, note: bool) {
+        self.jump = Jump::Idle;
+        self.search = None;
+        self.break_edit_group();
+        self.selected = node;
+        self.editing_note = note;
+        let len = self.buffer_len(node);
+        // vim's normal-mode cursor sits on a character, never past the end
+        let max = if self.mode == Mode::Normal { len.saturating_sub(1) } else { len };
+        self.cursor = cursor.min(max);
+    }
+
+    /// Like vim with the mouse on: the view moves, and the selection only
+    /// follows if it would otherwise leave the screen.
+    fn scroll(&mut self, lines: isize) {
+        if self.viewport_height == 0 {
+            return;
+        }
+        let mut starts = Vec::new(); // (node, first screen line) per row
+        let mut total = 0;
+        for row in self.outline.flatten() {
+            starts.push((row.node, total));
+            total += self.line_count(&row);
+        }
+        let max = total.saturating_sub(self.viewport_height) as isize;
+        self.scroll_offset = (self.scroll_offset as isize + lines).clamp(0, max) as usize;
+
+        let (top, bottom) = (self.scroll_offset, self.scroll_offset + self.viewport_height);
+        let Some(&(_, selected_line)) = starts.iter().find(|(node, _)| *node == self.selected) else {
+            return;
+        };
+        let target = if selected_line < top {
+            starts.iter().find(|(_, line)| *line >= top)
+        } else if selected_line >= bottom {
+            starts.iter().rev().find(|(_, line)| *line < bottom)
+        } else {
+            None
+        };
+        if let Some(&(node, _)) = target {
+            self.break_edit_group();
+            self.editing_note = false;
+            self.selected = node;
+            self.cursor = self.cursor.min(self.buffer_len(node));
+        }
     }
 
     fn jump_to_index(&mut self, index: usize) {

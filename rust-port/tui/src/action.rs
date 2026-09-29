@@ -1,5 +1,8 @@
-/// Everything the editor can do, independent of which key triggered it.
-/// Keymaps translate keys into these; `Editor::apply` executes them.
+use model::NodeId;
+
+/// Everything the editor can do, independent of which key or click
+/// triggered it. Keymaps and the mouse translate input into these;
+/// `Editor::apply` executes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     MoveUp,
@@ -43,6 +46,13 @@ pub enum Action {
 
     OpenSearch,
     Search(SearchOp),
+
+    /// Select `node` with the cursor at `cursor` in its text (or its note,
+    /// if `note`). From a mouse click, so it also cancels a jump or search.
+    PlaceCursor { node: NodeId, cursor: usize, note: bool },
+    /// Scroll the view by this many lines, moving the selection only if it
+    /// would otherwise go off screen.
+    Scroll(isize),
 
     ToggleHideCompleted,
     /// Puts the selected item's text in the paste register, and queues it

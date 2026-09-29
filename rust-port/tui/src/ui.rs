@@ -1,7 +1,7 @@
 use crate::config::EditingStyle;
 use crate::editor::{Editor, Mode};
 use crate::keymap::Keymap;
-use model::{Row, TAG_RE};
+use model::{NodeId, Row, TAG_RE};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,8 +10,51 @@ use ratatui::Frame;
 
 type Cells = Vec<(char, Style)>;
 
+/// Where things were drawn in the last frame, so mouse clicks can be mapped
+/// back to what's under them.
+#[derive(Default)]
+pub struct ScreenMap {
+    /// The visible outline lines, top to bottom.
+    pub lines: Vec<ScreenLine>,
+}
+
+pub struct ScreenLine {
+    pub y: u16,
+    pub node: NodeId,
+    /// Screen column of the line's first text character.
+    pub text_x: u16,
+    pub kind: LineKind,
+}
+
+pub enum LineKind {
+    Text {
+        bullet_x: u16,
+        /// Whether clicking the bullet folds/unfolds (the item has children).
+        foldable: bool,
+    },
+    /// The `line`th line (0-based) of the item's note.
+    Note { line: usize },
+}
+
+/// Column offsets within the outline area where a row's parts start, shared
+/// by drawing and the screen map so the two can't disagree.
+struct RowLayout {
+    bullet: u16,
+    text: u16,
+    note: u16,
+}
+
+fn row_layout(row: &Row) -> RowLayout {
+    let indent = if row.is_header { 0 } else { 2 * row.depth as u16 };
+    RowLayout {
+        bullet: indent,
+        text: indent + 2,
+        note: 2 * row.depth as u16 + 4,
+    }
+}
+
 /// `note` is a transient message (e.g. "saved") shown in the status bar.
-pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: Option<&str>) {
+pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: Option<&str>) -> ScreenMap {
     editor.current_row();
 
     let search_height = if editor.search_input().is_some() { 3 } else { 0 };
@@ -30,28 +73,58 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         chunks[0],
     );
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Blue));
+    let inner = block.inner(chunks[1]);
+
     let mut lines: Vec<Line> = Vec::new();
+    // Parallel to `lines`: what each one shows, as (node, text column, kind).
+    let mut layout: Vec<(NodeId, u16, LineKind)> = Vec::new();
     let mut selected_line = 0;
     for row in &editor.outline.flatten() {
         let is_selected = row.node == editor.selected;
         if is_selected {
             selected_line = lines.len();
         }
-        lines.extend(render_row(editor, row, is_selected));
+        let rendered = render_row(editor, row, is_selected);
+        let cols = row_layout(row);
+        layout.push((
+            row.node,
+            cols.text,
+            LineKind::Text { bullet_x: cols.bullet, foldable: row.has_children },
+        ));
+        for line in 0..rendered.len() - 1 {
+            layout.push((row.node, cols.note, LineKind::Note { line }));
+        }
+        lines.extend(rendered);
     }
 
-    let inner_height = chunks[1].height.saturating_sub(2) as usize;
+    let inner_height = inner.height as usize;
     editor.viewport_height = inner_height;
     editor.scroll_offset = clamp_scroll(editor.scroll_offset, selected_line, lines.len(), inner_height);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Blue));
     frame.render_widget(
         Paragraph::new(lines).block(block).scroll((editor.scroll_offset as u16, 0)),
         chunks[1],
     );
+
+    let screen_lines = layout
+        .into_iter()
+        .skip(editor.scroll_offset)
+        .take(inner_height)
+        .zip(inner.y..)
+        .map(|((node, text_x, kind), y)| ScreenLine {
+            y,
+            node,
+            text_x: inner.x + text_x,
+            kind: match kind {
+                LineKind::Text { bullet_x, foldable } => LineKind::Text { bullet_x: inner.x + bullet_x, foldable },
+                note => note,
+            },
+        })
+        .collect();
 
     if let Some((query, cursor)) = editor.search_input() {
         let block = Block::default()
@@ -70,6 +143,8 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         chunks[3],
     );
+
+    ScreenMap { lines: screen_lines }
 }
 
 fn search_line(query: &str, cursor: usize) -> Line<'static> {
@@ -149,12 +224,14 @@ fn render_row(editor: &Editor, row: &Row, is_selected: bool) -> Vec<Line<'static
     let node = editor.outline.get(row.node);
     let insert = editor.mode() == Mode::Insert;
 
-    let (prefix, bullet) = if row.is_header {
-        (String::new(), "» ")
+    let cols = row_layout(row);
+    let prefix = " ".repeat(cols.bullet as usize);
+    let bullet = if row.is_header {
+        "» "
     } else if row.has_children {
-        ("  ".repeat(row.depth), if row.visible_children { "▾ " } else { "▸ " })
+        if row.visible_children { "▾ " } else { "▸ " }
     } else {
-        ("  ".repeat(row.depth), "• ")
+        "• "
     };
 
     let mut text_style = Style::default();
@@ -182,7 +259,7 @@ fn render_row(editor: &Editor, row: &Row, is_selected: bool) -> Vec<Line<'static
     let mut lines = vec![Line::from(first)];
 
     if editor.shows_note(row.node) {
-        let note_prefix = "  ".repeat(row.depth + 1) + "  ";
+        let note_prefix = " ".repeat(cols.note as usize);
         let note_style = Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC);
         let mut cells: Cells = node.note.chars().map(|c| (c, note_style)).collect();
         if is_selected && editor.editing_note {
@@ -314,7 +391,10 @@ mod tests {
         let (width, height) = (60, 10);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let km = keymap::for_style(editor.style());
-        terminal.draw(|f| draw(f, editor, km.as_ref(), note)).unwrap();
+        terminal.draw(|f| {
+            draw(f, editor, km.as_ref(), note);
+        })
+        .unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
@@ -336,7 +416,10 @@ mod tests {
         let (width, height) = (60, 10);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let km = keymap::for_style(editor.style());
-        terminal.draw(|f| draw(f, editor, km.as_ref(), None)).unwrap();
+        terminal.draw(|f| {
+            draw(f, editor, km.as_ref(), None);
+        })
+        .unwrap();
         let buffer = terminal.backend().buffer();
         let line: Vec<&str> = (0..width).map(|x| buffer[(x, row as u16)].symbol()).collect();
         let start = (0..line.len())
