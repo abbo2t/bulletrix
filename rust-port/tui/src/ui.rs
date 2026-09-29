@@ -164,6 +164,9 @@ fn render_row(editor: &Editor, row: &Row, is_selected: bool) -> Vec<Line<'static
     if node.completed {
         text_style = text_style.add_modifier(Modifier::CROSSED_OUT | Modifier::DIM);
     }
+    if is_selected {
+        text_style = text_style.fg(Color::Yellow);
+    }
     let mut cells: Cells = node.text.chars().map(|c| (c, text_style)).collect();
     apply_tag_highlight(&mut cells, &node.text);
     if is_selected && !editor.editing_note {
@@ -219,8 +222,9 @@ fn apply_tag_highlight(cells: &mut Cells, text: &str) {
 /// Styles the cell under the cursor rather than inserting a glyph, so the
 /// text never shifts; past the end (or on a newline) it adds a blank cell.
 fn apply_cursor(cells: &mut Cells, cursor: usize, insert: bool) {
+    // Default colour, not yellow: the selected task's text is already yellow.
     let style = if insert {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+        Style::default().add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::REVERSED)
     };
@@ -325,6 +329,38 @@ mod tests {
         assert!(lines[2].contains("• alpha #tag"), "{lines:#?}");
         assert!(lines[3].contains("• bravo"), "{lines:#?}");
         assert!(lines[9].starts_with("-- NORMAL --"), "{lines:#?}");
+    }
+
+    /// Foreground colours of the `len` cells starting where `needle` appears on `row`.
+    fn colours_at(editor: &mut Editor, row: usize, needle: &str) -> Vec<Color> {
+        let (width, height) = (60, 10);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let km = keymap::for_style(editor.style());
+        terminal.draw(|f| draw(f, editor, km.as_ref(), None)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let line: Vec<&str> = (0..width).map(|x| buffer[(x, row as u16)].symbol()).collect();
+        let start = (0..line.len())
+            .find(|&x| line[x..].concat().starts_with(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not on row {row}: {}", line.concat()));
+        (start..start + needle.chars().count())
+            .map(|x| buffer[(x as u16, row as u16)].fg)
+            .collect()
+    }
+
+    #[test]
+    fn selected_task_text_is_yellow_but_tags_keep_their_colour() {
+        let mut ed = editor_with(&["alpha #tag", "bravo"], EditingStyle::Modal);
+        ed.cursor = 0; // keep the block cursor off the letters checked below
+        assert!(colours_at(&mut ed, 2, "lpha").iter().all(|&c| c == Color::Yellow));
+        assert!(colours_at(&mut ed, 2, "#tag").iter().all(|&c| c == Color::Magenta));
+        assert!(colours_at(&mut ed, 3, "bravo").iter().all(|&c| c != Color::Yellow));
+    }
+
+    #[test]
+    fn insert_cursor_stands_out_from_the_yellow_text() {
+        let mut ed = editor_with(&["alpha"], EditingStyle::Traditional);
+        ed.cursor = 1;
+        assert_eq!(colours_at(&mut ed, 2, "alpha"), [Color::Yellow, Color::Reset, Color::Yellow, Color::Yellow, Color::Yellow]);
     }
 
     #[test]
