@@ -41,10 +41,27 @@ pub enum Action {
     /// `None` cancels the jump.
     JumpInput(Option<char>),
 
+    OpenSearch,
+    Search(SearchOp),
+
     ToggleHideCompleted,
     /// Performed by the caller (the editor does no I/O).
     Save,
     Quit,
+}
+
+/// Edits to the search box's query, plus submitting or cancelling it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOp {
+    Insert(char),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    Submit,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

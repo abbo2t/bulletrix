@@ -3,7 +3,7 @@
 //! nothing about keys or rendering, so both keymaps share it and tests can
 //! drive it directly.
 
-use crate::action::{Action, FoldOp, InsertAt};
+use crate::action::{Action, FoldOp, InsertAt, SearchOp};
 use crate::config::EditingStyle;
 use crate::undo::UndoStack;
 use model::{NodeId, Outline, Row};
@@ -30,6 +30,13 @@ struct JumpTarget {
     cursor: usize,
 }
 
+#[derive(Default)]
+struct SearchInput {
+    query: String,
+    /// Character offset into `query`.
+    cursor: usize,
+}
+
 // Cloning the arena keeps NodeIds valid across undo, so unlike the Python
 // version there's no round-trip through JSON and ids to re-resolve.
 #[derive(Clone)]
@@ -53,9 +60,12 @@ pub struct Editor {
     /// Set by the renderer each frame; 0 means "treat every row as visible".
     pub viewport_height: usize,
     pub should_quit: bool,
+    /// One-shot message for the status bar (e.g. "no matches"); the caller takes it.
+    pub notice: Option<&'static str>,
     mode: Mode,
     style: EditingStyle,
     jump: Jump,
+    search: Option<SearchInput>,
     history: UndoStack<Snapshot>,
     edit_group: Option<EditGroup>,
 }
@@ -91,12 +101,14 @@ impl Editor {
             scroll_offset: 0,
             viewport_height: 0,
             should_quit: false,
+            notice: None,
             mode: match style {
                 EditingStyle::Modal => Mode::Normal,
                 EditingStyle::Traditional => Mode::Insert,
             },
             style,
             jump: Jump::Idle,
+            search: None,
             history: UndoStack::new(MAX_HISTORY),
             edit_group: None,
         }
@@ -155,6 +167,8 @@ impl Editor {
             Action::Redo => self.redo(),
             Action::StartJump => self.jump = Jump::AwaitingChar,
             Action::JumpInput(ch) => self.jump_input(ch),
+            Action::OpenSearch => self.search = Some(SearchInput::default()),
+            Action::Search(op) => self.search_op(op),
             Action::JumpToFirst => self.jump_to_index(0),
             Action::JumpToLast => self.jump_to_index(usize::MAX),
             _ => {
@@ -303,6 +317,8 @@ impl Editor {
             | Action::Redo
             | Action::StartJump
             | Action::JumpInput(_)
+            | Action::OpenSearch
+            | Action::Search(_)
             | Action::JumpToFirst
             | Action::JumpToLast
             | Action::ToggleHideCompleted
@@ -564,6 +580,74 @@ impl Editor {
             self.commit(before);
             self.outline.get_mut(node).touch();
         }
+    }
+
+    // -- search ------------------------------------------------------------------
+
+    /// The open search box's query and cursor, if any.
+    pub fn search_input(&self) -> Option<(&str, usize)> {
+        self.search.as_ref().map(|s| (s.query.as_str(), s.cursor))
+    }
+
+    fn search_op(&mut self, op: SearchOp) {
+        let Some(input) = self.search.as_mut() else {
+            return;
+        };
+        let len = char_len(&input.query);
+        match op {
+            SearchOp::Insert(c) => {
+                let at = byte_at(&input.query, input.cursor);
+                input.query.insert(at, c);
+                input.cursor += 1;
+            }
+            SearchOp::Backspace => {
+                if input.cursor > 0 {
+                    input.cursor -= 1;
+                    let at = byte_at(&input.query, input.cursor);
+                    input.query.remove(at);
+                }
+            }
+            SearchOp::Delete => {
+                if input.cursor < len {
+                    let at = byte_at(&input.query, input.cursor);
+                    input.query.remove(at);
+                }
+            }
+            SearchOp::Left => input.cursor = input.cursor.saturating_sub(1),
+            SearchOp::Right => input.cursor = (input.cursor + 1).min(len),
+            SearchOp::Home => input.cursor = 0,
+            SearchOp::End => input.cursor = len,
+            SearchOp::Cancel => self.search = None,
+            SearchOp::Submit => {
+                let query = std::mem::take(&mut input.query);
+                self.search = None;
+                self.go_to_first_match(&query);
+            }
+        }
+    }
+
+    /// Port of `_reveal`: selects the first match, expanding and zooming
+    /// out as needed. Matches hidden by hide-completed are skipped, since
+    /// they can't be selected.
+    fn go_to_first_match(&mut self, query: &str) {
+        if query.trim().is_empty() {
+            return;
+        }
+        let first = self
+            .outline
+            .search(query)
+            .into_iter()
+            .find(|&id| !self.outline.hidden_by_completed(id));
+        let Some(node) = first else {
+            self.notice = Some("no matches");
+            return;
+        };
+        self.outline.reveal(node);
+        self.break_edit_group();
+        self.editing_note = false;
+        self.selected = node;
+        self.cursor = 0;
+        self.enter_normal();
     }
 
     // -- flash.nvim-style jump ------------------------------------------------------

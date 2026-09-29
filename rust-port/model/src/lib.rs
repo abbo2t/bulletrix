@@ -431,6 +431,23 @@ impl Outline {
         self.arena[id].collapsed = !self.arena[id].collapsed;
     }
 
+    /// Expands every ancestor of `id` and zooms back out to the top, so the
+    /// node is on screen.
+    pub fn reveal(&mut self, id: NodeId) {
+        let mut ancestor = self.arena[id].parent;
+        while let Some(a) = ancestor {
+            self.arena[a].collapsed = false;
+            ancestor = self.arena[a].parent;
+        }
+        self.zoom_stack.truncate(1);
+    }
+
+    /// Whether hide-completed keeps `id` off screen (it or an ancestor is done).
+    pub fn hidden_by_completed(&self, id: NodeId) -> bool {
+        self.hide_completed
+            && std::iter::successors(Some(id), |&n| self.arena[n].parent).any(|n| self.arena[n].completed)
+    }
+
     pub fn search(&self, query: &str) -> Vec<NodeId> {
         let query = query.to_lowercase();
         let query = query.trim();
@@ -722,6 +739,33 @@ mod tests {
         // stable across process restarts - only the persisted uuid is).
         assert_eq!(restored.breadcrumb().len(), 2);
         assert_eq!(restored.get(restored.zoom_root()).text, "A");
+    }
+
+    #[test]
+    fn reveal_expands_ancestors_and_zooms_out_to_the_top() {
+        let (mut outline, a, b, c, root) = make_outline();
+        let needle = outline.create_node("needle");
+        outline.append_child(c, needle);
+        outline.arena[c].collapsed = true;
+        outline.zoom_in(a);
+
+        outline.reveal(needle);
+        assert_eq!(outline.zoom_root(), root);
+        assert!(!outline.get(c).collapsed);
+        assert!(outline.flatten().iter().any(|r| r.node == needle));
+        assert!(outline.flatten().iter().any(|r| r.node == b));
+    }
+
+    #[test]
+    fn hidden_by_completed_checks_ancestors_and_the_toggle() {
+        let (mut outline, _a, _b, c, _root) = make_outline();
+        let kid = outline.create_node("kid");
+        outline.append_child(c, kid);
+        outline.arena[c].completed = true;
+        assert!(!outline.hidden_by_completed(kid), "hide-completed is off");
+        outline.hide_completed = true;
+        assert!(outline.hidden_by_completed(c));
+        assert!(outline.hidden_by_completed(kid));
     }
 
     #[test]

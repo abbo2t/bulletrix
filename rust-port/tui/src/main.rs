@@ -3,8 +3,7 @@
 //! `bulletrix [--file PATH] [--style modal|traditional]`. The outline
 //! defaults to `~/.bulletrix/outline.json` (same file and format as the
 //! Python version) and the style to `editing_style` in
-//! `~/.bulletrix/config.toml`. Not yet ported: search, OPML import,
-//! clipboard copy.
+//! `~/.bulletrix/config.toml`. Not yet ported: OPML import, clipboard copy.
 
 mod action;
 mod autosave;
@@ -84,10 +83,11 @@ fn run(
         }
         let action = keymap::dispatch(editor, keymap, key);
         let force = action == Some(Action::Save);
+        let notice = editor.notice.take();
         note = match autosave.sync(editor, force) {
-            Ok(_) if force => Some("saved".into()),
-            Ok(_) => None,
             Err(e) => Some(format!("save failed: {e}")),
+            Ok(_) if force => Some("saved".into()),
+            Ok(_) => notice.map(String::from),
         };
     }
     Ok(())

@@ -14,9 +14,15 @@ type Cells = Vec<(char, Style)>;
 pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: Option<&str>) {
     editor.current_row();
 
+    let search_height = if editor.search_input().is_some() { 3 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(search_height),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     frame.render_widget(
@@ -47,6 +53,14 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
         chunks[1],
     );
 
+    if let Some((query, cursor)) = editor.search_input() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Magenta));
+        frame.render_widget(Paragraph::new(search_line(query, cursor)).block(block), chunks[2]);
+    }
+
     // Leading, not trailing: the help text is usually wider than the terminal.
     let mut status = status_text(editor, keymap);
     if let Some(note) = note {
@@ -54,8 +68,21 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: O
     }
     frame.render_widget(
         Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
-        chunks[2],
+        chunks[3],
     );
+}
+
+fn search_line(query: &str, cursor: usize) -> Line<'static> {
+    let mut cells: Cells = query.chars().map(|c| (c, Style::default())).collect();
+    apply_cursor(&mut cells, cursor, false);
+    let mut spans = cells_to_spans(cells);
+    if query.is_empty() {
+        spans.push(Span::styled(
+            "Search… (Enter to jump, Esc to cancel)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Mirrors `OutlineView._scroll_selected_into_view`: nudge the viewport by
@@ -96,6 +123,9 @@ fn breadcrumb_text(editor: &Editor) -> String {
 fn status_text(editor: &Editor, keymap: &dyn Keymap) -> String {
     if let Some(hint) = editor.jump_hint() {
         return format!("-- JUMP --  {hint}  (Esc to cancel)");
+    }
+    if editor.search_input().is_some() {
+        return "-- SEARCH --  Enter:go to first match  Esc:cancel".into();
     }
     let hide = if editor.outline.hide_completed { "on" } else { "off" };
     let help = keymap.help(editor.mode());
@@ -251,4 +281,86 @@ fn cells_to_spans(cells: Cells) -> Vec<Span<'static>> {
         spans.push(Span::styled(current, s));
     }
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::{Action, SearchOp};
+    use crate::keymap;
+    use model::Outline;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn editor_with(texts: &[&str], style: EditingStyle) -> Editor {
+        let mut outline = Outline::new();
+        let root = outline.root();
+        let mut prev = outline.get(root).children[0];
+        outline.get_mut(prev).text = texts[0].into();
+        for text in &texts[1..] {
+            let n = outline.create_node(*text);
+            outline.insert_sibling_after(prev, n);
+            prev = n;
+        }
+        Editor::new(outline, style)
+    }
+
+    /// Draws one frame and returns the screen as lines of text.
+    fn screen(editor: &mut Editor, note: Option<&str>) -> Vec<String> {
+        let (width, height) = (60, 10);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let km = keymap::for_style(editor.style());
+        terminal.draw(|f| draw(f, editor, km.as_ref(), note)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn draws_rows_with_bullets_breadcrumb_and_mode() {
+        let mut ed = editor_with(&["alpha #tag", "bravo"], EditingStyle::Modal);
+        let lines = screen(&mut ed, None);
+        assert!(lines[0].starts_with("Home"), "{lines:#?}");
+        assert!(lines[2].contains("• alpha #tag"), "{lines:#?}");
+        assert!(lines[3].contains("• bravo"), "{lines:#?}");
+        assert!(lines[9].starts_with("-- NORMAL --"), "{lines:#?}");
+    }
+
+    #[test]
+    fn search_box_appears_with_placeholder_then_query() {
+        let mut ed = editor_with(&["alpha"], EditingStyle::Modal);
+        ed.apply(Action::OpenSearch);
+        let lines = screen(&mut ed, None);
+        assert!(lines[7].contains("Search… (Enter to jump, Esc to cancel)"), "{lines:#?}");
+        assert!(lines[9].starts_with("-- SEARCH --"), "{lines:#?}");
+
+        for c in "alp".chars() {
+            ed.apply(Action::Search(SearchOp::Insert(c)));
+        }
+        let lines = screen(&mut ed, None);
+        assert!(lines[7].contains("│alp "), "{lines:#?}");
+
+        ed.apply(Action::Search(SearchOp::Cancel));
+        let lines = screen(&mut ed, None);
+        assert!(!lines.iter().any(|l| l.contains("Search…") || l.contains("alp ")), "{lines:#?}");
+    }
+
+    #[test]
+    fn notes_render_on_their_own_indented_lines() {
+        let mut ed = editor_with(&["alpha", "bravo"], EditingStyle::Modal);
+        let a = ed.selected;
+        ed.outline.get_mut(a).note = "line one\nline two".into();
+        let lines = screen(&mut ed, None);
+        assert!(lines[3].contains("    line one"), "{lines:#?}");
+        assert!(lines[4].contains("    line two"), "{lines:#?}");
+        assert!(lines[5].contains("• bravo"), "{lines:#?}");
+    }
+
+    #[test]
+    fn notes_lead_the_status_bar_so_they_are_never_cut_off() {
+        let mut ed = editor_with(&["alpha"], EditingStyle::Traditional);
+        let lines = screen(&mut ed, Some("no matches"));
+        assert!(lines[9].starts_with("[no matches]"), "{lines:#?}");
+    }
 }

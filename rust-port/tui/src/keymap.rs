@@ -2,7 +2,7 @@
 //! traditional = shared + insert layer; modal = shared + (insert layer or
 //! normal layer, depending on mode).
 
-use crate::action::{Action, FoldOp, InsertAt};
+use crate::action::{Action, FoldOp, InsertAt, SearchOp};
 use crate::config::EditingStyle;
 use crate::editor::{Editor, Mode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -22,9 +22,12 @@ pub fn for_style(style: EditingStyle) -> Box<dyn Keymap> {
 /// Applies the action `key` maps to, and returns it so the caller can act
 /// on the ones that need I/O (`Save`).
 pub fn dispatch(editor: &mut Editor, keymap: &mut dyn Keymap, key: KeyEvent) -> Option<Action> {
-    // A jump in progress consumes every key, whatever the style.
+    // A jump in progress consumes every key; an open search box consumes
+    // everything but the global keys. Both work the same in every style.
     let action = if editor.jump_active() {
         Some(Action::JumpInput(printable(key)))
+    } else if editor.search_input().is_some() {
+        global(key).or_else(|| search_box(key))
     } else {
         global(key).or_else(|| keymap.resolve(key, editor.mode()))
     }?;
@@ -55,6 +58,21 @@ fn global(key: KeyEvent) -> Option<Action> {
     }
 }
 
+fn search_box(key: KeyEvent) -> Option<Action> {
+    let op = match key.code {
+        KeyCode::Enter => SearchOp::Submit,
+        KeyCode::Esc => SearchOp::Cancel,
+        KeyCode::Backspace => SearchOp::Backspace,
+        KeyCode::Delete => SearchOp::Delete,
+        KeyCode::Left => SearchOp::Left,
+        KeyCode::Right => SearchOp::Right,
+        KeyCode::Home => SearchOp::Home,
+        KeyCode::End => SearchOp::End,
+        _ => SearchOp::Insert(printable(key)?),
+    };
+    Some(Action::Search(op))
+}
+
 /// Keys that mean the same thing in every style and mode.
 fn shared(key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -76,6 +94,7 @@ fn shared(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('o') if ctrl => Action::ToggleNote,
         KeyCode::Char('n') if ctrl => Action::NewChild,
         KeyCode::Char('g') if ctrl => Action::StartJump,
+        KeyCode::Char('f') if ctrl => Action::OpenSearch,
         _ => return None,
     };
     Some(action)
@@ -105,7 +124,7 @@ impl Keymap for TraditionalKeymap {
     }
 
     fn help(&self, _mode: Mode) -> &'static str {
-        "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^D:done  ^K:fold  \
+        "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^F:search  ^D:done  ^K:fold  \
          ^O:note  ^N:child  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
     }
 }
@@ -135,7 +154,7 @@ impl Keymap for ModalKeymap {
     fn help(&self, mode: Mode) -> &'static str {
         match mode {
             Mode::Normal => {
-                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  s:jump  \
+                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  s:jump  /:search  \
                  Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  \
                  Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  ^S:save  q:quit"
             }
@@ -190,6 +209,7 @@ impl ModalKeymap {
             '$' => Action::LineEnd,
             'G' => Action::JumpToLast,
             's' => Action::StartJump,
+            '/' => Action::OpenSearch,
             'u' => Action::Undo,
             // other printable keys are swallowed in NORMAL mode rather than typed
             _ => return None,
@@ -467,6 +487,89 @@ mod tests {
         h.press(KeyCode::Esc);
         assert!(!h.ed.jump_active());
         assert_eq!(h.ed.mode(), Mode::Normal);
+    }
+
+    // -- search ---------------------------------------------------------------
+
+    #[test]
+    fn search_reveals_and_selects_match() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("/bravo");
+        h.press(KeyCode::Enter);
+        assert!(h.ed.search_input().is_none());
+        assert_eq!(h.ed.selected, h.b);
+        assert_eq!(h.ed.cursor, 0);
+        assert_eq!(h.ed.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn search_expands_collapsed_parents_and_zooms_out() {
+        let mut h = harness(EditingStyle::Modal);
+        let needle = h.ed.outline.create_node("needle");
+        h.ed.outline.append_child(h.c, needle);
+        h.ed.outline.get_mut(h.c).collapsed = true;
+        h.press(KeyCode::Enter); // zoom into alpha
+        h.typ("/NEEDLE");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.ed.outline.zoom_root(), h.ed.outline.root());
+        assert!(!h.ed.outline.get(h.c).collapsed);
+        assert_eq!(h.ed.selected, needle);
+    }
+
+    #[test]
+    fn typing_in_the_search_box_never_edits_the_outline_and_escape_cancels() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("/ddcc");
+        h.press(KeyCode::Esc);
+        assert!(h.ed.search_input().is_none());
+        assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
+        assert_eq!(h.ed.selected, h.a);
+    }
+
+    #[test]
+    fn search_box_supports_cursor_editing() {
+        let mut h = harness(EditingStyle::Traditional);
+        h.ctrl('f');
+        h.typ("ravx");
+        h.press(KeyCode::Backspace);
+        h.typ("o");
+        h.press(KeyCode::Home);
+        h.typ("b");
+        assert_eq!(h.ed.search_input(), Some(("bravo", 1)));
+        h.press(KeyCode::Enter);
+        assert_eq!(h.ed.selected, h.b);
+        assert_eq!(h.ed.mode(), Mode::Insert, "traditional never leaves insert");
+    }
+
+    #[test]
+    fn search_with_no_matches_leaves_a_notice_and_keeps_the_selection() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("/zzz");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.ed.notice, Some("no matches"));
+        assert_eq!(h.ed.selected, h.a);
+    }
+
+    #[test]
+    fn search_skips_matches_hidden_by_hide_completed() {
+        let mut h = harness(EditingStyle::Modal);
+        h.ed.outline.get_mut(h.c).completed = true;
+        h.ctrl('h');
+        h.typ("/charlie");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.ed.notice, Some("no matches"));
+        h.ctrl('h');
+        h.typ("/charlie");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.ed.selected, h.c);
+    }
+
+    #[test]
+    fn global_keys_still_work_while_searching() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("/");
+        h.ctrl('q');
+        assert!(h.ed.should_quit);
     }
 
     // -- traditional ------------------------------------------------------------
