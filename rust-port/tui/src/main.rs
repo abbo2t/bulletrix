@@ -147,7 +147,7 @@ fn settle(
     autosave: &mut Autosave,
     force_save: bool,
 ) -> Option<String> {
-    let mut notice = editor.notice.take().map(String::from);
+    let mut notice = editor.notice.take();
     if let Some(text) = editor.pending_copy.take() {
         notice = Some(match clipboard::copy(terminal.backend_mut(), &text) {
             Ok(()) => "copied".into(),

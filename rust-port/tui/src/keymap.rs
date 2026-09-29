@@ -95,6 +95,8 @@ fn shared(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('n') if ctrl => Action::NewChild,
         KeyCode::Char('g') if ctrl => Action::StartJump,
         KeyCode::Char('f') if ctrl => Action::OpenSearch,
+        KeyCode::F(3) if key.modifiers.contains(KeyModifiers::SHIFT) => Action::PrevMatch,
+        KeyCode::F(3) => Action::NextMatch,
         _ => return None,
     };
     Some(action)
@@ -132,7 +134,7 @@ impl Keymap for TraditionalKeymap {
     }
 
     fn help(&self, _mode: Mode) -> &'static str {
-        "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^F:search  ^D:done  ^K:fold  \
+        "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^F:search  F3/⇧F3:next/prev match  ^D:done  ^K:fold  \
          ^O:note  ^N:child  ^C/^P:copy/paste  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
     }
 }
@@ -162,7 +164,7 @@ impl Keymap for ModalKeymap {
     fn help(&self, mode: Mode) -> &'static str {
         match mode {
             Mode::Normal => {
-                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy:copy  p/P:paste  hjkl:move  s:jump  /:search  \
+                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy:copy  p/P:paste  hjkl:move  s:jump  /:search  n/N:next/prev match  \
                  Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  \
                  Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  ^S:save  q:quit"
             }
@@ -221,6 +223,8 @@ impl ModalKeymap {
             'G' => Action::JumpToLast,
             's' => Action::StartJump,
             '/' => Action::OpenSearch,
+            'n' => Action::NextMatch,
+            'N' => Action::PrevMatch,
             'u' => Action::Undo,
             // other printable keys are swallowed in NORMAL mode rather than typed
             _ => return None,
@@ -535,7 +539,7 @@ mod tests {
     fn p_with_nothing_copied_changes_nothing() {
         let mut h = harness(EditingStyle::Modal);
         h.typ("p");
-        assert_eq!(h.ed.notice, Some("nothing to paste"));
+        assert_eq!(h.ed.notice.as_deref(), Some("nothing to paste"));
         assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
     }
 
@@ -623,7 +627,7 @@ mod tests {
         for c in "ddp".chars() {
             dispatch(&mut ed, km.as_mut(), KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
-        assert_eq!(ed.notice, Some("nothing to paste"));
+        assert_eq!(ed.notice.as_deref(), Some("nothing to paste"));
         assert_eq!(ed.outline.get(ed.outline.root()).children.len(), 1);
     }
 
@@ -742,7 +746,7 @@ mod tests {
         let mut h = harness(EditingStyle::Modal);
         h.typ("/zzz");
         h.press(KeyCode::Enter);
-        assert_eq!(h.ed.notice, Some("no matches"));
+        assert_eq!(h.ed.notice.as_deref(), Some("no matches"));
         assert_eq!(h.ed.selected, h.a);
     }
 
@@ -753,11 +757,81 @@ mod tests {
         h.ctrl('h');
         h.typ("/charlie");
         h.press(KeyCode::Enter);
-        assert_eq!(h.ed.notice, Some("no matches"));
+        assert_eq!(h.ed.notice.as_deref(), Some("no matches"));
         h.ctrl('h');
         h.typ("/charlie");
         h.press(KeyCode::Enter);
         assert_eq!(h.ed.selected, h.c);
+    }
+
+    fn take_notice(h: &mut Harness) -> String {
+        h.ed.notice.take().unwrap_or_default()
+    }
+
+    #[test]
+    fn n_and_capital_n_step_through_matches_and_wrap_around() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("/a"); // alpha, bravo and charlie all match
+        h.press(KeyCode::Enter);
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.a, "match 1/3".into()));
+        h.typ("n");
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.b, "match 2/3".into()));
+        h.typ("n");
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.c, "match 3/3".into()));
+        h.typ("n");
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.a, "match 1/3 (wrapped)".into()));
+        h.typ("N");
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.c, "match 3/3 (wrapped)".into()));
+        h.typ("N");
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.b, "match 2/3".into()));
+    }
+
+    #[test]
+    fn n_continues_from_wherever_the_selection_has_moved_to() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("/r"); // bravo and charlie
+        h.press(KeyCode::Enter);
+        h.typ("Gggn"); // wander off to the end and back to the top, then n
+        assert_eq!((h.ed.selected, take_notice(&mut h)), (h.b, "match 1/2".into()));
+    }
+
+    #[test]
+    fn n_reveals_a_match_inside_a_collapsed_item() {
+        let mut h = harness(EditingStyle::Modal);
+        let one = h.ed.outline.create_node("needle one");
+        h.ed.outline.append_child(h.a, one);
+        let two = h.ed.outline.create_node("needle two");
+        h.ed.outline.append_child(h.c, two);
+        h.ed.outline.get_mut(h.c).collapsed = true;
+
+        h.typ("/needle");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.ed.selected, one);
+        h.typ("n");
+        assert_eq!(h.ed.selected, two);
+        assert!(!h.ed.outline.get(h.c).collapsed);
+    }
+
+    #[test]
+    fn n_before_any_search_says_so_and_stays_put() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("n");
+        assert_eq!(take_notice(&mut h), "no previous search");
+        assert_eq!(h.ed.selected, h.a);
+    }
+
+    #[test]
+    fn traditional_uses_f3_and_shift_f3_and_n_just_types() {
+        let mut h = harness(EditingStyle::Traditional);
+        h.ctrl('f');
+        h.typ("a");
+        h.press(KeyCode::Enter);
+        h.press(KeyCode::F(3));
+        assert_eq!(h.ed.selected, h.b);
+        h.key(KeyCode::F(3), KeyModifiers::SHIFT);
+        assert_eq!(h.ed.selected, h.a);
+        h.typ("n");
+        assert_eq!(h.text(h.a), "nalpha", "search leaves the cursor at the start");
     }
 
     #[test]

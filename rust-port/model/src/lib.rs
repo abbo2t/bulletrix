@@ -487,6 +487,18 @@ impl Outline {
             && std::iter::successors(Some(id), |&n| self.arena[n].parent).any(|n| self.arena[n].completed)
     }
 
+    /// Every item (not the invisible root) in outline order: depth-first,
+    /// parents before children - the order `search` returns matches in.
+    pub fn preorder(&self) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self.arena[self.root].children.iter().rev().copied().collect();
+        while let Some(id) = stack.pop() {
+            out.push(id);
+            stack.extend(self.arena[id].children.iter().rev());
+        }
+        out
+    }
+
     pub fn search(&self, query: &str) -> Vec<NodeId> {
         let query = query.to_lowercase();
         let query = query.trim();
@@ -783,6 +795,16 @@ mod tests {
         // stable across process restarts - only the persisted uuid is).
         assert_eq!(restored.breadcrumb().len(), 2);
         assert_eq!(restored.get(restored.zoom_root()).text, "A");
+    }
+
+    #[test]
+    fn preorder_lists_parents_before_children_in_outline_order() {
+        let (mut outline, a, b, c, _root) = make_outline();
+        let kid = outline.create_node("kid");
+        outline.append_child(a, kid);
+        let grandkid = outline.create_node("grandkid");
+        outline.append_child(kid, grandkid);
+        assert_eq!(outline.preorder(), [a, kid, grandkid, b, c]);
     }
 
     #[test]

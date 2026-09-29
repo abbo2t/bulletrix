@@ -8,6 +8,7 @@ use crate::config::EditingStyle;
 use crate::layout::{line_of, row_layout, wrap};
 use crate::undo::UndoStack;
 use model::{NodeId, Outline, Row, Subtree};
+use std::collections::HashMap;
 
 // Home-row-first order, like flash.nvim/easymotion default label pools.
 pub const JUMP_LABELS: &str = "fjdkslaghrueiwoqpcmxzntyvb";
@@ -29,6 +30,13 @@ struct JumpTarget {
     label: char,
     node: NodeId,
     cursor: usize,
+}
+
+#[derive(Clone, Copy)]
+enum SearchStep {
+    First,
+    Next,
+    Prev,
 }
 
 #[derive(Default)]
@@ -73,7 +81,7 @@ pub struct Editor {
     pub viewport_width: usize,
     pub should_quit: bool,
     /// One-shot message for the status bar (e.g. "no matches"); the caller takes it.
-    pub notice: Option<&'static str>,
+    pub notice: Option<String>,
     /// Text to put on the clipboard; the caller takes it and does the I/O.
     pub pending_copy: Option<String>,
     /// What the paste actions insert; filled by `CopyLine` and `DeleteNode`.
@@ -84,6 +92,8 @@ pub struct Editor {
     style: EditingStyle,
     jump: Jump,
     search: Option<SearchInput>,
+    /// The last submitted query, for next/previous match.
+    last_search: Option<String>,
     history: UndoStack<Snapshot>,
     edit_group: Option<EditGroup>,
 }
@@ -130,6 +140,7 @@ impl Editor {
             style,
             jump: Jump::Idle,
             search: None,
+            last_search: None,
             history: UndoStack::new(MAX_HISTORY),
             edit_group: None,
         }
@@ -217,6 +228,8 @@ impl Editor {
             Action::JumpInput(ch) => self.jump_input(ch),
             Action::OpenSearch => self.search = Some(SearchInput::default()),
             Action::Search(op) => self.search_op(op),
+            Action::NextMatch => self.go_to_match(SearchStep::Next),
+            Action::PrevMatch => self.go_to_match(SearchStep::Prev),
             Action::PlaceCursor { node, cursor, note } => self.place_cursor(node, cursor, note),
             Action::Scroll(lines) => self.scroll(lines),
             Action::ZoomTo(depth) => {
@@ -383,6 +396,8 @@ impl Editor {
             | Action::JumpInput(_)
             | Action::OpenSearch
             | Action::Search(_)
+            | Action::NextMatch
+            | Action::PrevMatch
             | Action::PlaceCursor { .. }
             | Action::Scroll(_)
             | Action::ZoomTo(_)
@@ -604,7 +619,7 @@ impl Editor {
     /// inside the zoomed view.
     fn paste(&mut self, row: Row, above: bool) {
         let Some(register) = self.register.clone() else {
-            self.notice = Some("nothing to paste");
+            self.notice = Some("nothing to paste".into());
             return;
         };
         self.checkpoint(None);
@@ -767,33 +782,58 @@ impl Editor {
             SearchOp::Submit => {
                 let query = std::mem::take(&mut input.query);
                 self.search = None;
-                self.go_to_first_match(&query);
+                if !query.trim().is_empty() {
+                    self.last_search = Some(query);
+                    self.go_to_match(SearchStep::First);
+                }
             }
         }
     }
 
-    /// Port of `_reveal`: selects the first match, expanding and zooming
-    /// out as needed. Matches hidden by hide-completed are skipped, since
-    /// they can't be selected.
-    fn go_to_first_match(&mut self, query: &str) {
-        if query.trim().is_empty() {
+    /// Selects a match for the last search: the first in the outline, or
+    /// the next/previous one after the selection, wrapping around. Matches
+    /// hidden by hide-completed are skipped since they can't be selected.
+    /// Like Python's `_reveal`, the match is expanded into view and the zoom
+    /// reset to the top.
+    fn go_to_match(&mut self, step: SearchStep) {
+        let Some(query) = &self.last_search else {
+            self.notice = Some("no previous search".into());
             return;
-        }
-        let first = self
+        };
+        let matches: Vec<NodeId> = self
             .outline
             .search(query)
             .into_iter()
-            .find(|&id| !self.outline.hidden_by_completed(id));
-        let Some(node) = first else {
-            self.notice = Some("no matches");
+            .filter(|&id| !self.outline.hidden_by_completed(id))
+            .collect();
+        if matches.is_empty() {
+            self.notice = Some("no matches".into());
             return;
+        }
+        // Outline order, so "next" means after the selection wherever it is.
+        let order: HashMap<NodeId, usize> =
+            self.outline.preorder().into_iter().enumerate().map(|(i, id)| (id, i)).collect();
+        let here = order.get(&self.selected);
+        let found = match step {
+            SearchStep::First => Some(0),
+            SearchStep::Next => matches.iter().position(|m| order.get(m) > here),
+            SearchStep::Prev => matches.iter().rposition(|m| order.get(m) < here),
         };
+        let (i, wrapped) = match (found, step) {
+            (Some(i), _) => (i, false),
+            (None, SearchStep::Prev) => (matches.len() - 1, true),
+            (None, _) => (0, true),
+        };
+
+        let node = matches[i];
         self.outline.reveal(node);
         self.break_edit_group();
         self.editing_note = false;
         self.selected = node;
         self.cursor = 0;
         self.enter_normal();
+        let wrapped = if wrapped { " (wrapped)" } else { "" };
+        self.notice = Some(format!("match {}/{}{wrapped}", i + 1, matches.len()));
     }
 
     // -- flash.nvim-style jump ------------------------------------------------------

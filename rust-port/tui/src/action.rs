@@ -46,6 +46,9 @@ pub enum Action {
 
     OpenSearch,
     Search(SearchOp),
+    /// Go to the next/previous match for the last search, wrapping around.
+    NextMatch,
+    PrevMatch,
 
     /// Select `node` with the cursor at `cursor` in its text (or its note,
     /// if `note`). From a mouse click, so it also cancels a jump or search.
