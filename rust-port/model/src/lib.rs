@@ -104,6 +104,7 @@ pub struct Row {
     pub visible_children: bool,
 }
 
+#[derive(Clone)]
 pub struct Outline {
     arena: SlotMap<NodeId, Node>,
     root: NodeId,
@@ -224,7 +225,7 @@ impl Outline {
     }
 
     // -- lookups ---------------------------------------------------------
-    fn index_in_parent(&self, id: NodeId) -> usize {
+    pub fn index_in_parent(&self, id: NodeId) -> usize {
         let parent = self.arena[id].parent.expect("node has no parent");
         self.arena[parent]
             .children
@@ -269,11 +270,49 @@ impl Outline {
         self.arena[id].children.insert(0, new_id);
     }
 
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        self.arena[child].parent = Some(parent);
+        self.arena[parent].children.push(child);
+    }
+
     pub fn remove(&mut self, id: NodeId) {
         if let Some(parent) = self.arena[id].parent {
             self.arena[parent].children.retain(|&c| c != id);
             self.arena[id].parent = None;
         }
+    }
+
+    /// Detaches `id` and frees it along with all of its descendants.
+    pub fn delete(&mut self, id: NodeId) {
+        self.remove(id);
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            if let Some(node) = self.arena.remove(n) {
+                stack.extend(node.children);
+            }
+        }
+    }
+
+    /// Joins the next sibling's text and children onto `id` (forward-delete
+    /// at end of line). Returns false if there is no next sibling.
+    pub fn merge_forward(&mut self, id: NodeId) -> bool {
+        let Some(parent) = self.arena[id].parent else {
+            return false;
+        };
+        let idx = self.index_in_parent(id);
+        let Some(&next) = self.arena[parent].children.get(idx + 1) else {
+            return false;
+        };
+        let text = std::mem::take(&mut self.arena[next].text);
+        self.arena[id].text.push_str(&text);
+        let moved = std::mem::take(&mut self.arena[next].children);
+        for &c in &moved {
+            self.arena[c].parent = Some(id);
+        }
+        self.arena[id].children.extend(moved);
+        self.arena[parent].children.remove(idx + 1);
+        self.arena.remove(next);
+        true
     }
 
     pub fn indent(&mut self, id: NodeId) -> bool {
@@ -664,6 +703,31 @@ mod tests {
         // stable across process restarts - only the persisted uuid is).
         assert_eq!(restored.breadcrumb().len(), 2);
         assert_eq!(restored.get(restored.zoom_root()).text, "A");
+    }
+
+    #[test]
+    fn merge_forward_joins_next_sibling_text_and_children() {
+        let (mut outline, a, b, c, root) = make_outline();
+        let grandchild = outline.create_node("child-of-b");
+        outline.append_child(b, grandchild);
+
+        assert!(outline.merge_forward(a));
+        assert_eq!(outline.get(a).text, "AB");
+        assert_eq!(outline.get(a).children, vec![grandchild]);
+        assert_eq!(outline.get(grandchild).parent, Some(a));
+        assert_eq!(outline.get(root).children, vec![a, c]);
+        assert!(!outline.merge_forward(c));
+    }
+
+    #[test]
+    fn delete_frees_the_whole_subtree() {
+        let (mut outline, _a, b, _c, _root) = make_outline();
+        let grandchild = outline.create_node("child-of-b");
+        outline.append_child(b, grandchild);
+
+        outline.delete(b);
+        assert!(outline.arena.get(b).is_none());
+        assert!(outline.arena.get(grandchild).is_none());
     }
 
     #[test]
