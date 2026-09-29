@@ -1,56 +1,94 @@
-//! Ratatui port of bulletrix. Editing style is chosen by `--style
-//! modal|traditional` or `editing_style` in `~/.bulletrix/config.toml`.
-//! Not yet ported: persistence, search, OPML import, clipboard copy.
+//! Ratatui port of bulletrix.
+//!
+//! `bulletrix [--file PATH] [--style modal|traditional]`. The outline
+//! defaults to `~/.bulletrix/outline.json` (same file and format as the
+//! Python version) and the style to `editing_style` in
+//! `~/.bulletrix/config.toml`. Not yet ported: search, OPML import,
+//! clipboard copy.
 
 mod action;
+mod autosave;
 mod config;
 mod editor;
 mod keymap;
 mod ui;
 mod undo;
 
+use action::Action;
+use autosave::Autosave;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use editor::Editor;
 use keymap::Keymap;
-use model::Outline;
+use model::storage;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, Stdout};
+use std::process::ExitCode;
 
-fn main() -> io::Result<()> {
-    let style = match config::resolve_style(std::env::args().skip(1), config::config_path().as_deref()) {
-        Ok(style) => style,
+fn main() -> ExitCode {
+    let opts = match config::resolve(std::env::args().skip(1), config::data_dir().as_deref()) {
+        Ok(opts) => opts,
         Err(e) => {
             eprintln!("bulletrix: {e}");
-            std::process::exit(2);
+            return ExitCode::from(2);
+        }
+    };
+    // Load before touching the terminal, so a bad file is a plain error
+    // message rather than a flash of alternate screen.
+    let outline = match storage::load(&opts.file) {
+        Ok(outline) => outline,
+        Err(e) => {
+            eprintln!("bulletrix: can't load {}: {e}", opts.file.display());
+            return ExitCode::FAILURE;
         }
     };
 
+    let mut editor = Editor::new(outline, opts.style);
+    let mut keymap = keymap::for_style(opts.style);
+    let mut autosave = Autosave::new(opts.file, &mut editor);
+
     install_panic_hook();
-    let mut terminal = init_terminal()?;
-    let mut outline = Outline::new();
-    seed_demo_content(&mut outline);
-    let mut editor = Editor::new(outline, style);
-    let mut keymap = keymap::for_style(style);
-    let result = run(&mut terminal, &mut editor, keymap.as_mut());
-    restore_terminal(&mut terminal)?;
-    result
+    let result = init_terminal().and_then(|mut terminal| {
+        let result = run(&mut terminal, &mut editor, keymap.as_mut(), &mut autosave);
+        restore_terminal(&mut terminal)?;
+        result
+    });
+    if let Err(e) = result {
+        eprintln!("bulletrix: {e}");
+        return ExitCode::FAILURE;
+    }
+    // Autosave already ran after the last key; this only matters if that failed.
+    if let Err(e) = autosave.sync(&mut editor, false) {
+        eprintln!("bulletrix: couldn't save {}: {e}", autosave.path().display());
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 fn run(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     editor: &mut Editor,
     keymap: &mut dyn Keymap,
+    autosave: &mut Autosave,
 ) -> io::Result<()> {
+    let mut note: Option<String> = None;
     while !editor.should_quit {
-        terminal.draw(|frame| ui::draw(frame, editor, keymap))?;
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                keymap::dispatch(editor, keymap, key);
-            }
+        terminal.draw(|frame| ui::draw(frame, editor, keymap, note.as_deref()))?;
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
         }
+        let action = keymap::dispatch(editor, keymap, key);
+        let force = action == Some(Action::Save);
+        note = match autosave.sync(editor, force) {
+            Ok(_) if force => Some("saved".into()),
+            Ok(_) => None,
+            Err(e) => Some(format!("save failed: {e}")),
+        };
     }
     Ok(())
 }
@@ -79,27 +117,4 @@ fn install_panic_hook() {
         let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
         original(info);
     }));
-}
-
-fn seed_demo_content(outline: &mut Outline) {
-    let root = outline.root();
-    // Outline::new() (like Python's Outline.__init__) seeds root with one
-    // empty child - reuse it rather than leave a blank row in the demo.
-    let groceries = outline.get(root).children[0];
-    outline.get_mut(groceries).text = "Groceries #errand".into();
-
-    let milk = outline.create_node("Buy milk");
-    outline.get_mut(milk).completed = true;
-    outline.add_first_child(groceries, milk);
-    let eggs = outline.create_node("Buy eggs");
-    outline.insert_sibling_after(milk, eggs);
-
-    let work = outline.create_node("Work @acme");
-    outline.insert_sibling_after(groceries, work);
-    let review = outline.create_node("Review PR #4");
-    outline.get_mut(review).note = "check the WSL2 focus bug writeup first".into();
-    outline.add_first_child(work, review);
-
-    let idea = outline.create_node("Port bulletrix to ratatui");
-    outline.insert_sibling_after(work, idea);
 }

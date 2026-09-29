@@ -42,6 +42,8 @@ pub enum Action {
     JumpInput(Option<char>),
 
     ToggleHideCompleted,
+    /// Performed by the caller (the editor does no I/O).
+    Save,
     Quit,
 }
 

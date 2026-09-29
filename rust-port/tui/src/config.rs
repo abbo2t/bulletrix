@@ -31,31 +31,54 @@ struct ConfigFile {
     editing_style: EditingStyle,
 }
 
-pub fn config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".bulletrix").join("config.toml"))
+#[derive(Debug, PartialEq, Eq)]
+pub struct Options {
+    pub style: EditingStyle,
+    pub file: PathBuf,
 }
 
-/// `--style` on the command line overrides `editing_style` in the config file;
-/// a missing config file means the default.
-pub fn resolve_style(
-    args: impl IntoIterator<Item = String>,
-    config_path: Option<&Path>,
-) -> Result<EditingStyle, String> {
+/// `~/.bulletrix`, where both the outline and the config file live.
+pub fn data_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".bulletrix"))
+}
+
+/// Parses `--style modal|traditional` and `--file PATH` (either as
+/// `--flag value` or `--flag=value`). `--style` overrides the config file's
+/// `editing_style`; `--file` defaults to `outline.json` in `data_dir`.
+pub fn resolve(args: impl IntoIterator<Item = String>, data_dir: Option<&Path>) -> Result<Options, String> {
     let mut args = args.into_iter();
-    let mut flag = None;
+    let mut style_flag = None;
+    let mut file_flag = None;
     while let Some(arg) = args.next() {
-        if let Some(value) = arg.strip_prefix("--style=") {
-            flag = Some(value.to_string());
-        } else if arg == "--style" {
-            flag = Some(args.next().ok_or("--style needs a value")?);
-        } else {
-            return Err(format!("unrecognized argument {arg:?}"));
-        }
-    }
-    if let Some(value) = flag {
-        return value.parse();
+        let (name, inline_value) = match arg.split_once('=') {
+            Some((name, value)) => (name.to_string(), Some(value.to_string())),
+            None => (arg.clone(), None),
+        };
+        let slot = match name.as_str() {
+            "--style" => &mut style_flag,
+            "--file" => &mut file_flag,
+            _ => return Err(format!("unrecognized argument {arg:?}")),
+        };
+        let value = match inline_value {
+            Some(v) => v,
+            None => args.next().ok_or_else(|| format!("{name} needs a value"))?,
+        };
+        *slot = Some(value);
     }
 
+    let style = match style_flag {
+        Some(value) => value.parse()?,
+        None => style_from_config(data_dir.map(|d| d.join("config.toml")).as_deref())?,
+    };
+    let file = match (file_flag, data_dir) {
+        (Some(f), _) => PathBuf::from(f),
+        (None, Some(dir)) => dir.join("outline.json"),
+        (None, None) => return Err("$HOME is not set; pass --file PATH".into()),
+    };
+    Ok(Options { style, file })
+}
+
+fn style_from_config(config_path: Option<&Path>) -> Result<EditingStyle, String> {
     let Some(path) = config_path else {
         return Ok(EditingStyle::default());
     };
@@ -72,10 +95,15 @@ pub fn resolve_style(
 mod tests {
     use super::*;
 
-    fn write_config(name: &str, contents: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("bulletrix-config-test-{}-{name}.toml", std::process::id()));
-        std::fs::write(&path, contents).unwrap();
-        path
+    /// A fresh data dir, optionally containing a config.toml.
+    fn data_dir_with(name: &str, config: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bulletrix-config-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(contents) = config {
+            std::fs::write(dir.join("config.toml"), contents).unwrap();
+        }
+        dir
     }
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -83,28 +111,35 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_modal_when_no_flag_and_no_file() {
-        let missing = std::env::temp_dir().join("bulletrix-definitely-missing.toml");
-        assert_eq!(resolve_style(args(&[]), Some(&missing)), Ok(EditingStyle::Modal));
+    fn defaults_to_modal_and_outline_json_in_the_data_dir() {
+        let dir = data_dir_with("defaults", None);
+        let opts = resolve(args(&[]), Some(&dir)).unwrap();
+        assert_eq!(opts.style, EditingStyle::Modal);
+        assert_eq!(opts.file, dir.join("outline.json"));
     }
 
     #[test]
     fn reads_style_from_config_file() {
-        let path = write_config("file", "editing_style = \"traditional\"\n");
-        assert_eq!(resolve_style(args(&[]), Some(&path)), Ok(EditingStyle::Traditional));
+        let dir = data_dir_with("file", Some("editing_style = \"traditional\"\n"));
+        assert_eq!(resolve(args(&[]), Some(&dir)).unwrap().style, EditingStyle::Traditional);
     }
 
     #[test]
-    fn flag_overrides_config_file_in_both_spellings() {
-        let path = write_config("override", "editing_style = \"traditional\"\n");
-        assert_eq!(resolve_style(args(&["--style", "modal"]), Some(&path)), Ok(EditingStyle::Modal));
-        assert_eq!(resolve_style(args(&["--style=modal"]), Some(&path)), Ok(EditingStyle::Modal));
+    fn flags_override_defaults_in_both_spellings() {
+        let dir = data_dir_with("override", Some("editing_style = \"traditional\"\n"));
+        let opts = resolve(args(&["--style", "modal", "--file=/tmp/x.json"]), Some(&dir)).unwrap();
+        assert_eq!(opts, Options { style: EditingStyle::Modal, file: PathBuf::from("/tmp/x.json") });
+        let opts = resolve(args(&["--style=modal", "--file", "y.json"]), Some(&dir)).unwrap();
+        assert_eq!(opts, Options { style: EditingStyle::Modal, file: PathBuf::from("y.json") });
     }
 
     #[test]
-    fn rejects_unknown_values_and_misspelled_keys() {
-        assert!(resolve_style(args(&["--style", "emacs"]), None).is_err());
-        let path = write_config("typo", "editing-style = \"traditional\"\n");
-        assert!(resolve_style(args(&[]), Some(&path)).is_err());
+    fn rejects_bad_input() {
+        assert!(resolve(args(&["--style", "emacs"]), None).is_err());
+        assert!(resolve(args(&["--file"]), None).is_err());
+        assert!(resolve(args(&["--bogus"]), None).is_err());
+        assert!(resolve(args(&[]), None).is_err(), "no HOME and no --file");
+        let dir = data_dir_with("typo", Some("editing-style = \"traditional\"\n"));
+        assert!(resolve(args(&[]), Some(&dir)).is_err());
     }
 }

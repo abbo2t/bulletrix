@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use slotmap::{new_key_type, SlotMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod storage;
+
 new_key_type! { pub struct NodeId; }
 
 // Python: TAG_RE = re.compile(r"(?<!\w)([#@][\w][\w-]*)")
@@ -452,14 +454,17 @@ impl Outline {
     }
 
     // -- persistence -------------------------------------------------------
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "root": self.node_to_dto(self.root),
-            "hide_completed": self.hide_completed,
-            "zoom_stack": self.zoom_stack.iter().map(|&id| self.arena[id].uuid.clone()).collect::<Vec<_>>(),
-            "selected_id": self.selected_id.map(|id| self.arena[id].uuid.clone()),
-            "cursor": self.cursor,
-        })
+    /// Pretty-printed JSON in the same shape and key order as Python's
+    /// `json.dump(outline.to_dict(), f, indent=2)`.
+    pub fn to_json_string(&self) -> String {
+        let dto = OutlineDto {
+            root: self.node_to_dto(self.root),
+            hide_completed: self.hide_completed,
+            zoom_stack: self.zoom_stack.iter().map(|&id| self.arena[id].uuid.clone()).collect(),
+            selected_id: self.selected_id.map(|id| self.arena[id].uuid.clone()),
+            cursor: self.cursor,
+        };
+        serde_json::to_string_pretty(&dto).expect("outline DTO always serializes")
     }
 
     fn node_to_dto(&self, id: NodeId) -> NodeDto {
@@ -476,11 +481,17 @@ impl Outline {
         }
     }
 
-    pub fn from_json(value: serde_json::Value) -> serde_json::Result<Self> {
-        let dto: OutlineDto = serde_json::from_value(value)?;
+    pub fn from_json_str(json: &str) -> serde_json::Result<Self> {
+        let dto: OutlineDto = serde_json::from_str(json)?;
 
         let mut arena = SlotMap::with_key();
         let root = Self::dto_to_node(&mut arena, &dto.root, None);
+        // Like Python's Outline.__init__: an outline always has something to select.
+        if arena[root].children.is_empty() {
+            let first = arena.insert(Node::new());
+            arena[first].parent = Some(root);
+            arena[root].children.push(first);
+        }
 
         let mut outline = Outline {
             arena,
@@ -541,20 +552,28 @@ impl Default for Outline {
 // Nested tree-shaped DTO for JSON - the arena is flat and id-based, but
 // the on-disk format (and Python's json.dumps(outline.to_dict())) is a
 // nested tree, so this is the translation boundary between the two shapes.
+// Missing fields get the same defaults as Python's `Node.from_dict`.
 #[derive(Serialize, Deserialize)]
 struct NodeDto {
+    #[serde(default)]
     id: String,
+    #[serde(default)]
     text: String,
+    #[serde(default)]
     note: String,
+    #[serde(default)]
     completed: bool,
+    #[serde(default)]
     collapsed: bool,
+    #[serde(default = "now_secs")]
     created: f64,
+    #[serde(default = "now_secs")]
     modified: f64,
     #[serde(default)]
     children: Vec<NodeDto>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct OutlineDto {
     root: NodeDto,
     #[serde(default)]
@@ -693,8 +712,8 @@ mod tests {
         outline.cursor = 3;
         outline.selected_id = Some(b);
 
-        let json = outline.to_json();
-        let restored = Outline::from_json(json).unwrap();
+        let json = outline.to_json_string();
+        let restored = Outline::from_json_str(&json).unwrap();
 
         assert_eq!(restored.cursor, 3);
         assert_eq!(restored.get(restored.root()).text, "Home");
@@ -703,6 +722,33 @@ mod tests {
         // stable across process restarts - only the persisted uuid is).
         assert_eq!(restored.breadcrumb().len(), 2);
         assert_eq!(restored.get(restored.zoom_root()).text, "A");
+    }
+
+    #[test]
+    fn timestamps_round_trip_exactly() {
+        // From a real Python-written file; lost its last digit without float_roundtrip.
+        let json = r#"{"root": {"children": [{"created": 1789956452.0115001, "modified": 1790135295.8527381}]}}"#;
+        let resaved = Outline::from_json_str(json).unwrap().to_json_string();
+        assert!(resaved.contains("1789956452.0115001"), "{resaved}");
+        assert!(resaved.contains("1790135295.8527381"), "{resaved}");
+    }
+
+    #[test]
+    fn json_keeps_python_key_order() {
+        let json = Outline::new().to_json_string();
+        let keys: Vec<usize> = ["\"root\"", "\"hide_completed\"", "\"zoom_stack\"", "\"selected_id\"", "\"cursor\""]
+            .iter()
+            .map(|k| json.rfind(k).unwrap())
+            .collect();
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{json}");
+    }
+
+    #[test]
+    fn loading_an_outline_with_no_items_seeds_one_empty_item() {
+        let json = r#"{"root": {"id": "r", "text": "", "note": "", "completed": false,
+                       "collapsed": false, "created": 0, "modified": 0, "children": []}}"#;
+        let outline = Outline::from_json_str(json).unwrap();
+        assert_eq!(outline.get(outline.root()).children.len(), 1);
     }
 
     #[test]

@@ -10,7 +10,8 @@ use ratatui::Frame;
 
 type Cells = Vec<(char, Style)>;
 
-pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap) {
+/// `note` is a transient message (e.g. "saved") shown in the status bar.
+pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap, note: Option<&str>) {
     editor.current_row();
 
     let chunks = Layout::default()
@@ -46,8 +47,13 @@ pub fn draw(frame: &mut Frame, editor: &mut Editor, keymap: &dyn Keymap) {
         chunks[1],
     );
 
+    // Leading, not trailing: the help text is usually wider than the terminal.
+    let mut status = status_text(editor, keymap);
+    if let Some(note) = note {
+        status = format!("[{note}]  {status}");
+    }
     frame.render_widget(
-        Paragraph::new(status_text(editor, keymap)).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         chunks[2],
     );
 }

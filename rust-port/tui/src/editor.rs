@@ -123,6 +123,14 @@ impl Editor {
         Some(first)
     }
 
+    /// The outline as it should be written to disk, including where the
+    /// selection and cursor are so reopening lands in the same place.
+    pub fn persisted_json(&mut self) -> String {
+        self.outline.selected_id = Some(self.selected);
+        self.outline.cursor = self.cursor;
+        self.outline.to_json_string()
+    }
+
     pub fn shows_note(&self, id: NodeId) -> bool {
         !self.outline.get(id).note.is_empty() || (id == self.selected && self.editing_note)
     }
@@ -140,6 +148,7 @@ impl Editor {
 
     pub fn apply(&mut self, action: Action) {
         match action {
+            Action::Save => {}
             Action::Quit => self.should_quit = true,
             Action::ToggleHideCompleted => self.outline.hide_completed = !self.outline.hide_completed,
             Action::Undo => self.undo(),
@@ -297,6 +306,7 @@ impl Editor {
             | Action::JumpToFirst
             | Action::JumpToLast
             | Action::ToggleHideCompleted
+            | Action::Save
             | Action::Quit => unreachable!("row-independent actions are handled in apply"),
         }
     }

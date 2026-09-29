@@ -10,7 +10,9 @@ path = "src/lib.rs"
 [dependencies]
 slotmap = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip: the default parser can be off by one ULP, which silently
+# changed timestamps when re-saving files written by the Python version.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 fancy-regex = "0.13"
 once_cell = "1.19"
 uuid = { version = "1", features = ["v4"] }

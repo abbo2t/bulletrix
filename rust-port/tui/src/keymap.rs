@@ -19,16 +19,17 @@ pub fn for_style(style: EditingStyle) -> Box<dyn Keymap> {
     }
 }
 
-pub fn dispatch(editor: &mut Editor, keymap: &mut dyn Keymap, key: KeyEvent) {
+/// Applies the action `key` maps to, and returns it so the caller can act
+/// on the ones that need I/O (`Save`).
+pub fn dispatch(editor: &mut Editor, keymap: &mut dyn Keymap, key: KeyEvent) -> Option<Action> {
     // A jump in progress consumes every key, whatever the style.
     let action = if editor.jump_active() {
         Some(Action::JumpInput(printable(key)))
     } else {
         global(key).or_else(|| keymap.resolve(key, editor.mode()))
-    };
-    if let Some(action) = action {
-        editor.apply(action);
-    }
+    }?;
+    editor.apply(action);
+    Some(action)
 }
 
 fn printable(key: KeyEvent) -> Option<char> {
@@ -47,6 +48,8 @@ fn global(key: KeyEvent) -> Option<Action> {
         Some(Action::Quit)
     } else if is_ctrl(key, 'h') {
         Some(Action::ToggleHideCompleted)
+    } else if is_ctrl(key, 's') {
+        Some(Action::Save)
     } else {
         None
     }
@@ -72,6 +75,7 @@ fn shared(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('k') if ctrl => Action::Fold(FoldOp::Toggle),
         KeyCode::Char('o') if ctrl => Action::ToggleNote,
         KeyCode::Char('n') if ctrl => Action::NewChild,
+        KeyCode::Char('g') if ctrl => Action::StartJump,
         _ => return None,
     };
     Some(action)
@@ -101,8 +105,8 @@ impl Keymap for TraditionalKeymap {
     }
 
     fn help(&self, _mode: Mode) -> &'static str {
-        "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^D:done  ^K:fold  \
-         ^O:note  ^N:child  ^Z/^Y:undo/redo  ^H:hide-done  ^Q:quit"
+        "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^D:done  ^K:fold  \
+         ^O:note  ^N:child  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
     }
 }
 
@@ -133,7 +137,7 @@ impl Keymap for ModalKeymap {
             Mode::Normal => {
                 "i/a/I/A:insert  o/O:open  dd:delete  cc:change  hjkl:move  s:jump  \
                  Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  \
-                 Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  q:quit"
+                 Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  ^S:save  q:quit"
             }
             Mode::Insert => "Esc:normal  Enter:new line  Tab/⇧Tab:indent  Backspace/Delete:edit  ^D:done  ^O:note",
         }
@@ -492,6 +496,16 @@ mod tests {
         assert_eq!(h.text(h.a), "alpha");
         h.ctrl('y');
         assert_eq!(h.text(h.a), "alphaxyz");
+    }
+
+    #[test]
+    fn traditional_ctrl_g_jumps_without_typing_the_target_or_label() {
+        let mut h = harness(EditingStyle::Traditional);
+        h.ctrl('g');
+        h.typ("rj");
+        assert_eq!(h.ed.selected, h.c);
+        assert_eq!(h.ed.cursor, 3);
+        assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
     }
 
     #[test]
