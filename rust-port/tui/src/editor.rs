@@ -64,8 +64,9 @@ pub struct Editor {
     pub notice: Option<&'static str>,
     /// Text to put on the clipboard; the caller takes it and does the I/O.
     pub pending_copy: Option<String>,
-    /// What `PasteBelow` inserts. Internal rather than read back from the
-    /// system clipboard, which terminals generally don't allow.
+    /// What the paste actions insert; filled by `CopyLine` and `DeleteNode`.
+    /// Internal rather than read back from the system clipboard, which
+    /// terminals generally don't allow.
     register: Option<String>,
     mode: Mode,
     style: EditingStyle,
@@ -296,7 +297,8 @@ impl Editor {
                 self.register = Some(text.clone());
                 self.pending_copy = Some(text);
             }
-            Action::PasteBelow => self.paste_below(row),
+            Action::PasteBelow => self.paste(row, false),
+            Action::PasteAbove => self.paste(row, true),
 
             Action::EnterInsert(at) => {
                 let len = self.buffer_len(node);
@@ -495,10 +497,10 @@ impl Editor {
         self.focus_new_node(new);
     }
 
-    /// A new sibling below `row` with the register's text (text only: no
-    /// note, done state, or children). Like `open_below`, a header row gets
-    /// a first child instead, so the paste stays inside the zoomed view.
-    fn paste_below(&mut self, row: Row) {
+    /// A new sibling next to `row` with the register's text (text only: no
+    /// note, done state, or children). Like `o`/`O`, a header row gets a
+    /// first child instead, so the paste stays inside the zoomed view.
+    fn paste(&mut self, row: Row, above: bool) {
         let Some(text) = self.register.clone() else {
             self.notice = Some("nothing to paste");
             return;
@@ -507,6 +509,8 @@ impl Editor {
         let new = self.outline.create_node(text);
         if row.is_header {
             self.outline.add_first_child(row.node, new);
+        } else if above {
+            self.outline.insert_sibling_before(row.node, new);
         } else {
             self.outline.insert_sibling_after(row.node, new);
         }
@@ -543,6 +547,9 @@ impl Editor {
         if parent == self.outline.root() && self.outline.get(parent).children.len() == 1 {
             return; // keep at least one top-level item
         }
+        // Like vim's dd: the deleted text can be put back elsewhere with p.
+        // Register only - deleting doesn't overwrite the system clipboard.
+        self.register = Some(self.outline.get(node).text.clone());
         self.checkpoint(None);
         let idx = self
             .outline

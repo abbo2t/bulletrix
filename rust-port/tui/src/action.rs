@@ -48,8 +48,9 @@ pub enum Action {
     /// Puts the selected item's text in the paste register, and queues it
     /// in `Editor::pending_copy` for the caller to send to the clipboard.
     CopyLine,
-    /// Inserts a new item with the register's text below the selected one.
+    /// Insert a new item with the register's text next to the selected one.
     PasteBelow,
+    PasteAbove,
     /// Performed by the caller (the editor does no I/O).
     Save,
     Quit,

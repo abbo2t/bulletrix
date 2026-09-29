@@ -123,12 +123,17 @@ impl Keymap for TraditionalKeymap {
         if is_ctrl(key, 'c') {
             return Some(Action::CopyLine);
         }
+        // Not Ctrl+V: terminals keep that for their own paste, which types
+        // the clipboard into the current line - the right thing here anyway.
+        if is_ctrl(key, 'p') {
+            return Some(Action::PasteBelow);
+        }
         shared(key).or_else(|| insert_layer(key))
     }
 
     fn help(&self, _mode: Mode) -> &'static str {
         "Enter:new line  Tab/⇧Tab:indent  ^←/^→:zoom  ^↑/^↓:move  ^G:jump  ^F:search  ^D:done  ^K:fold  \
-         ^O:note  ^N:child  ^C:copy  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
+         ^O:note  ^N:child  ^C/^P:copy/paste  ^Z/^Y:undo/redo  ^H:hide-done  ^S:save  ^Q:quit"
     }
 }
 
@@ -157,7 +162,7 @@ impl Keymap for ModalKeymap {
     fn help(&self, mode: Mode) -> &'static str {
         match mode {
             Mode::Normal => {
-                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy/p:copy/paste  hjkl:move  s:jump  /:search  \
+                "i/a/I/A:insert  o/O:open  dd:delete  cc:change  yy:copy  p/P:paste  hjkl:move  s:jump  /:search  \
                  Enter/L:zoom-in  H:zoom-out  Space/za/zo/zc:fold  gg/G:top/bottom  x:del-char  \
                  Tab/⇧Tab:indent  ^D:done  ^O:note  ^H:hide-done  u:undo  ^R:redo  ^S:save  q:quit"
             }
@@ -202,6 +207,7 @@ impl ModalKeymap {
             'A' => Action::EnterInsert(InsertAt::LineEnd),
             'o' => Action::OpenBelow,
             'p' => Action::PasteBelow,
+            'P' => Action::PasteAbove,
             'O' => Action::OpenAbove,
             'x' => Action::DeleteForward,
             'h' => Action::CharLeft { wrap: false },
@@ -531,6 +537,55 @@ mod tests {
         h.typ("p");
         assert_eq!(h.ed.notice, Some("nothing to paste"));
         assert_eq!(h.top_level(), ["alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn capital_p_pastes_above() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("GyyggP");
+        assert_eq!(h.top_level(), ["charlie", "alpha", "bravo", "charlie"]);
+        assert_eq!(h.ed.selected, h.ed.outline.get(h.ed.outline.root()).children[0]);
+    }
+
+    #[test]
+    fn capital_p_on_a_zoomed_header_pastes_as_its_first_child() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("j");
+        h.press(KeyCode::Enter); // zoom into bravo; its header row is selected
+        h.typ("yyP");
+        let kids: Vec<&str> = h.ed.outline.get(h.b).children.iter().map(|&id| h.text(id)).collect();
+        assert_eq!(kids, ["bravo"]);
+    }
+
+    #[test]
+    fn dd_then_p_moves_an_item() {
+        let mut h = harness(EditingStyle::Modal);
+        h.typ("jddp");
+        assert_eq!(h.top_level(), ["alpha", "charlie", "bravo"]);
+        assert_eq!(h.ed.pending_copy, None, "dd leaves the system clipboard alone");
+    }
+
+    #[test]
+    fn a_refused_dd_copies_nothing() {
+        let mut ed = Editor::new(Outline::new(), EditingStyle::Modal);
+        let mut km = for_style(EditingStyle::Modal);
+        for c in "ddp".chars() {
+            dispatch(&mut ed, km.as_mut(), KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(ed.notice, Some("nothing to paste"));
+        assert_eq!(ed.outline.get(ed.outline.root()).children.len(), 1);
+    }
+
+    #[test]
+    fn traditional_ctrl_p_pastes_below_and_plain_p_types() {
+        let mut h = harness(EditingStyle::Traditional);
+        h.ctrl('c');
+        h.press(KeyCode::Down);
+        h.ctrl('p');
+        assert_eq!(h.top_level(), ["alpha", "bravo", "alpha", "charlie"]);
+        assert_eq!(h.ed.mode(), Mode::Insert);
+        h.typ("p");
+        assert_eq!(h.top_level(), ["alpha", "bravo", "palpha", "charlie"]);
     }
 
     #[test]
